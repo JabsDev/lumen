@@ -30,11 +30,13 @@ jobs:
       # now because it tries to install the removed "tools" package, so drive sdkmanager ourselves.
       - name: Install the SDK pieces the build needs
         run: |
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          SDKMGR="$(find "$SDK/cmdline-tools" -maxdepth 2 -name sdkmanager -type f 2>/dev/null | sort | tail -1)"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMGR="$(ls -1 "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort | tail -1)"
           test -n "$SDKMGR" || { echo "::error::sdkmanager not found under $SDK"; exit 1; }
           echo "Android SDK: $SDK"
           echo "sdkmanager: $SDKMGR"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           yes | "$SDKMGR" --licenses > /dev/null || true
           "$SDKMGR" "platform-tools" "platforms;android-35" "build-tools;35.0.0" \
             "ndk;28.2.13676358" "cmake;3.22.1"
