@@ -10,6 +10,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import com.jabs.lumen.engine.MaskEngine
 import com.jabs.lumen.model.BrushStroke
@@ -37,11 +38,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -60,8 +63,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -82,6 +83,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.jabs.lumen.data.Photo
 import com.jabs.lumen.model.ColorGrading
@@ -102,6 +104,11 @@ private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 8f
 private const val DOUBLE_TAP_ZOOM = 2.5f
 
+/** Size of the little histogram that sits on the corner of the photo. */
+private val HISTOGRAM_WIDTH = 168.dp
+private val HISTOGRAM_HEIGHT = 52.dp
+private val HISTOGRAM_MARGIN = 10.dp
+
 @Composable
 fun EditorScreen(vm: LumenViewModel, photo: Photo) {
     val params by vm.params.collectAsState()
@@ -112,6 +119,9 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
     val canUndo by vm.canUndo.collectAsState()
     val canRedo by vm.canRedo.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    // Tapping the active tab again folds the panel away and hands the picture the whole screen;
+    // the tabs themselves stay put at the bottom, the way they do in Lightroom.
+    var panelOpen by rememberSaveable { mutableStateOf(true) }
     var maskUi by remember { mutableStateOf(MaskUiState()) }
     val shown = if (showOriginal) original else preview
 
@@ -162,13 +172,15 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
         }
 
         var boxSize by remember { mutableStateOf(IntSize.Zero) }
-        // Zoom and pan of the preview. One finger paints on the mask tab, so zooming is offered
-        // everywhere else and cleared on the way in, which keeps mask taps on the right pixel.
+        // Zoom and pan of the preview. One finger paints while the mask panel is open, so zooming
+        // is offered everywhere else and cleared on the way in, which keeps mask taps on the right
+        // pixel. Folding the mask panel away hands the finger back to zooming.
         var scale by remember(photo.id) { mutableFloatStateOf(MIN_ZOOM) }
         var panOffset by remember(photo.id) { mutableStateOf(Offset.Zero) }
-        val canZoom = tab != MASK_TAB
-        LaunchedEffect(tab) {
-            if (tab == MASK_TAB) {
+        val maskEditing = panelOpen && tab == MASK_TAB
+        val canZoom = !maskEditing
+        LaunchedEffect(maskEditing) {
+            if (maskEditing) {
                 scale = MIN_ZOOM
                 panOffset = Offset.Zero
             }
@@ -184,9 +196,9 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
         // The overlay shows the mask's shape, which never changes while an adjustment slider is
         // dragged — keying on the geometry alone keeps that drag from rebuilding it every frame.
         val maskGeom = maskSel?.copy(adjust = com.jabs.lumen.model.MaskAdjust())
-        LaunchedEffect(tab, maskUi.selectedId, maskUi.overlay, showOriginal, maskGeom, original, params.rotation, params.flipHorizontal) {
+        LaunchedEffect(maskEditing, maskUi.selectedId, maskUi.overlay, showOriginal, maskGeom, original, params.rotation, params.flipHorizontal) {
             val bmp = original
-            overlayBmp = if (tab == MASK_TAB && maskUi.overlay && !showOriginal && maskSel != null && bmp != null) {
+            overlayBmp = if (maskEditing && maskUi.overlay && !showOriginal && maskSel != null && bmp != null) {
                 withContext(Dispatchers.IO) {
                     // Masks are painted before geometry, so the overlay is built the same way and
                     // only then turned to match what is on screen.
@@ -249,8 +261,8 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
             Modifier.weight(1f).fillMaxWidth().padding(8.dp)
                 .onSizeChanged { boxSize = it }
                 .then(if (canZoom) Modifier.transformable(transformState) else Modifier)
-                .pointerInput(tab, maskUi.selectedId, maskUi.erasing) {
-                    if (tab != MASK_TAB) return@pointerInput
+                .pointerInput(maskEditing, maskUi.selectedId, maskUi.erasing) {
+                    if (!maskEditing) return@pointerInput
                     detectTapGestures(onTap = { offset ->
                         val id = maskUi.selectedId
                         val m = id?.let { sid -> masksLive.firstOrNull { it.id == sid } }
@@ -272,8 +284,8 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                         }
                     })
                 }
-                .pointerInput(tab, maskUi.selectedId, maskUi.erasing) {
-                    if (tab != MASK_TAB) return@pointerInput
+                .pointerInput(maskEditing, maskUi.selectedId, maskUi.erasing) {
+                    if (!maskEditing) return@pointerInput
                     detectDragGestures(
                         onDragStart = { offset ->
                             val bmp = preview
@@ -292,9 +304,9 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                         },
                     )
                 }
-                .pointerInput(tab) {
+                .pointerInput(maskEditing) {
                     // On the picture: hold to peek at the original, double tap to zoom in and back out.
-                    if (tab == MASK_TAB) return@pointerInput
+                    if (maskEditing) return@pointerInput
                     detectTapGestures(
                         onDoubleTap = { pos ->
                             if (scale > MIN_ZOOM) {
@@ -349,7 +361,7 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                 Text(
                     "%.1f×".format(scale),
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
+                        .align(Alignment.BottomStart)
                         .padding(8.dp)
                         .background(Color(0x99000000), RoundedCornerShape(4.dp))
                         .clickable {
@@ -373,84 +385,129 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
-        }
-
-        Histogram(
-            histogram,
-            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
-        )
-
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(vertical = 8.dp),
-        ) {
-            items(Preset.entries) { preset ->
-                AssistChip(onClick = { vm.applyPreset(preset) }, label = { Text(preset.label) })
+            // The histogram rides on the photo itself, not on the box around it. With the panel
+            // folded away the photo sits centred in a taller frame, and a plot pinned to the box
+            // would drift off into the empty space around it. ContentScale.Fit draws the photo as
+            // the box shrunk by the tighter of the two ratios and centred, so its frame is easy to
+            // work out and the plot always lands on the picture.
+            val photo = shown
+            val frameRight: Float
+            val frameTop: Float
+            if (photo == null || boxSize.width == 0 || boxSize.height == 0) {
+                frameRight = boxSize.width.toFloat()
+                frameTop = 0f
+            } else {
+                val fit = (boxSize.width / photo.width.toFloat())
+                    .coerceAtMost(boxSize.height / photo.height.toFloat())
+                frameRight = (boxSize.width + photo.width * fit) / 2f
+                frameTop = (boxSize.height - photo.height * fit) / 2f
             }
-        }
-
-        ScrollableTabRow(
-            selectedTabIndex = tab,
-            edgePadding = 12.dp,
-            containerColor = MaterialTheme.colorScheme.background,
-        ) {
-            CATEGORIES.forEachIndexed { i, title ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
-            }
-        }
-
-        // The curve editor needs room and its own gestures: inside the scrolling panel it would
-        // fight the scroll for every drag, so that tab gets a taller panel that does not scroll.
-        val curvesTab = tab == 1
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .height(if (curvesTab) 300.dp else 215.dp)
-                .then(if (curvesTab) Modifier else Modifier.verticalScroll(rememberScrollState()))
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            when (tab) {
-                0 -> {
-                    Adjust(vm, "Exposição", params.exposure, -2f..2f, { "%+.2f EV".format(it) }) { p, v -> p.copy(exposure = v) }
-                    Adjust(vm, "Contraste", params.contrast, -1f..1f, ::percent) { p, v -> p.copy(contrast = v) }
-                    Adjust(vm, "Realces", params.highlights, -1f..1f, ::percent) { p, v -> p.copy(highlights = v) }
-                    Adjust(vm, "Sombras", params.shadows, -1f..1f, ::percent) { p, v -> p.copy(shadows = v) }
-                    Adjust(vm, "Brancos", params.whites, -1f..1f, ::percent) { p, v -> p.copy(whites = v) }
-                    Adjust(vm, "Pretos", params.blacks, -1f..1f, ::percent) { p, v -> p.copy(blacks = v) }
-                    Adjust(vm, "Clareza", params.clarity, -1f..1f, ::percent) { p, v -> p.copy(clarity = v) }
-                    Adjust(vm, "Textura", params.texture, -1f..1f, ::percent) { p, v -> p.copy(texture = v) }
-                }
-                1 -> CurveTab(vm, params, Modifier.weight(1f).fillMaxWidth())
-                2 -> ColorTab(vm, params)
-                3 -> {
-                    LutSection(vm, params)
-                    Adjust(vm, "Vinheta", params.vignette, -1f..1f, ::percent) { p, v -> p.copy(vignette = v) }
-                }
-                4 -> {
-                    Adjust(vm, "Distorção", params.distortion, -1f..1f, ::percent) { p, v -> p.copy(distortion = v) }
-                    Adjust(vm, "Aberração Vermelho/Ciano", params.chromaRed, -1f..1f, ::percent) { p, v -> p.copy(chromaRed = v) }
-                    Adjust(vm, "Aberração Azul/Amarelo", params.chromaBlue, -1f..1f, ::percent) { p, v -> p.copy(chromaBlue = v) }
-                }
-                5 -> {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            vm.updateLive { it.copy(rotation = (it.rotation + 3) % 4) }
-                            vm.commit()
-                        }) { Text("Girar ↺") }
-                        OutlinedButton(onClick = {
-                            vm.updateLive { it.copy(rotation = (it.rotation + 1) % 4) }
-                            vm.commit()
-                        }) { Text("Girar ↻") }
-                        OutlinedButton(onClick = {
-                            vm.updateLive { it.copy(flipHorizontal = !it.flipHorizontal) }
-                            vm.commit()
-                        }) { Text("Espelhar") }
+            val density = LocalDensity.current
+            val histWidth = with(density) { HISTOGRAM_WIDTH.toPx() }
+            val margin = with(density) { HISTOGRAM_MARGIN.toPx() }
+            Histogram(
+                histogram,
+                Modifier
+                    .align(Alignment.TopStart)
+                    .offset {
+                        IntOffset(
+                            (frameRight - histWidth - margin).roundToInt().coerceAtLeast(margin.roundToInt()),
+                            (frameTop + margin).roundToInt().coerceAtLeast(margin.roundToInt()),
+                        )
                     }
+                    .size(HISTOGRAM_WIDTH, HISTOGRAM_HEIGHT),
+            )
+        }
+
+        if (panelOpen) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 6.dp),
+            ) {
+                items(Preset.entries) { preset ->
+                    AssistChip(onClick = { vm.applyPreset(preset) }, label = { Text(preset.label) })
                 }
-                MASK_TAB -> MaskTab(vm, params, maskUi) { maskUi = it }
             }
-            TextButton(onClick = vm::resetAll) { Text("Redefinir tudo") }
+        }
+
+        // The panel only exists while a tab is open: tapping the active tab again folds it away
+        // and lets the picture grow into the space.
+        if (panelOpen) {
+            // The curve editor needs room and its own gestures: inside the scrolling panel it would
+            // fight the scroll for every drag, so that tab gets a taller panel that does not scroll.
+            val curvesTab = tab == 1
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .height(if (curvesTab) 300.dp else 215.dp)
+                    .then(if (curvesTab) Modifier else Modifier.verticalScroll(rememberScrollState()))
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                when (tab) {
+                    0 -> {
+                        Adjust(vm, "Exposição", params.exposure, -2f..2f, { "%+.2f EV".format(it) }) { p, v -> p.copy(exposure = v) }
+                        Adjust(vm, "Contraste", params.contrast, -1f..1f, ::percent) { p, v -> p.copy(contrast = v) }
+                        Adjust(vm, "Realces", params.highlights, -1f..1f, ::percent) { p, v -> p.copy(highlights = v) }
+                        Adjust(vm, "Sombras", params.shadows, -1f..1f, ::percent) { p, v -> p.copy(shadows = v) }
+                        Adjust(vm, "Brancos", params.whites, -1f..1f, ::percent) { p, v -> p.copy(whites = v) }
+                        Adjust(vm, "Pretos", params.blacks, -1f..1f, ::percent) { p, v -> p.copy(blacks = v) }
+                        Adjust(vm, "Clareza", params.clarity, -1f..1f, ::percent) { p, v -> p.copy(clarity = v) }
+                        Adjust(vm, "Textura", params.texture, -1f..1f, ::percent) { p, v -> p.copy(texture = v) }
+                    }
+                    1 -> CurveTab(vm, params, Modifier.weight(1f).fillMaxWidth())
+                    2 -> ColorTab(vm, params)
+                    3 -> {
+                        LutSection(vm, params)
+                        Adjust(vm, "Vinheta", params.vignette, -1f..1f, ::percent) { p, v -> p.copy(vignette = v) }
+                    }
+                    4 -> {
+                        Adjust(vm, "Distorção", params.distortion, -1f..1f, ::percent) { p, v -> p.copy(distortion = v) }
+                        Adjust(vm, "Aberração Vermelho/Ciano", params.chromaRed, -1f..1f, ::percent) { p, v -> p.copy(chromaRed = v) }
+                        Adjust(vm, "Aberração Azul/Amarelo", params.chromaBlue, -1f..1f, ::percent) { p, v -> p.copy(chromaBlue = v) }
+                    }
+                    5 -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                vm.updateLive { it.copy(rotation = (it.rotation + 3) % 4) }
+                                vm.commit()
+                            }) { Text("Girar ↺") }
+                            OutlinedButton(onClick = {
+                                vm.updateLive { it.copy(rotation = (it.rotation + 1) % 4) }
+                                vm.commit()
+                            }) { Text("Girar ↻") }
+                            OutlinedButton(onClick = {
+                                vm.updateLive { it.copy(flipHorizontal = !it.flipHorizontal) }
+                                vm.commit()
+                            }) { Text("Espelhar") }
+                        }
+                    }
+                    MASK_TAB -> MaskTab(vm, params, maskUi) { maskUi = it }
+                }
+                TextButton(onClick = vm::resetAll) { Text("Redefinir tudo") }
+            }
+        }
+
+        // The tab strip lives at the bottom and never moves; it doubles as the fold/unfold.
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            itemsIndexed(CATEGORIES) { i, title ->
+                FilterChip(
+                    selected = panelOpen && tab == i,
+                    onClick = {
+                        if (panelOpen && tab == i) {
+                            panelOpen = false
+                        } else {
+                            tab = i
+                            panelOpen = true
+                        }
+                    },
+                    label = { Text(title) },
+                )
+            }
         }
     }
 }

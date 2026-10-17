@@ -124,14 +124,10 @@ object ImageEngine {
         )
     }
 
-    fun render(src: Bitmap, p: EditParams): Bitmap = renderWithHistogram(src, p).first
-
-    /** Renders and builds the histogram in the same pass; getPixel per sample was a real cost. */
-    fun renderWithHistogram(src: Bitmap, p: EditParams): Pair<Bitmap, IntArray> {
+    fun render(src: Bitmap, p: EditParams): Bitmap {
         val corrected = if (isLensIdentity(p)) src else applyLensCorrection(src, p)
         val processed = if (isPixelIdentity(p)) corrected else applyAll(corrected, p)
-        val final = applyGeometry(processed, p)
-        return final to histogram(final)
+        return applyGeometry(processed, p)
     }
 
     fun renderFast(src: Bitmap, p: EditParams): Bitmap {
@@ -461,21 +457,37 @@ object ImageEngine {
     private fun corner(data: FloatArray, from: Int, to: Int, t: Float): Float =
         data[from] + (data[to] - data[from]) * t
 
-    fun histogram(bitmap: Bitmap): IntArray {
+    /**
+     * One 256-bin histogram per channel. The editor draws the luminance silhouette with the three
+     * colour channels traced over it, so all four travel together.
+     */
+    class Histograms(
+        val luma: IntArray = IntArray(256),
+        val red: IntArray = IntArray(256),
+        val green: IntArray = IntArray(256),
+        val blue: IntArray = IntArray(256),
+    )
+
+    fun histogram(bitmap: Bitmap): Histograms {
         val w = bitmap.width
         val h = bitmap.height
         val pixels = IntArray(w * h)
         bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        val bins = IntArray(256)
+        val out = Histograms()
         val step = max(1, sqrt(w * h / 40000f).toInt())
         var i = 0
         while (i < pixels.size) {
             val c = pixels[i]
-            val luma = LUMA_R * ((c shr 16) and 0xFF) + LUMA_G * ((c shr 8) and 0xFF) + LUMA_B * (c and 0xFF)
-            bins[luma.toInt().coerceIn(0, 255)]++
+            val r = (c shr 16) and 0xFF
+            val g = (c shr 8) and 0xFF
+            val b = c and 0xFF
+            out.red[r]++
+            out.green[g]++
+            out.blue[b]++
+            out.luma[(LUMA_R * r + LUMA_G * g + LUMA_B * b).toInt().coerceIn(0, 255)]++
             i += step * step
         }
-        return bins
+        return out
     }
 
     private fun isLensIdentity(p: EditParams): Boolean =

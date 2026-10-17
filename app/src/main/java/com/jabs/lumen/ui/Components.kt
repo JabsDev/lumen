@@ -2,11 +2,14 @@ package com.jabs.lumen.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,16 +17,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import com.jabs.lumen.engine.ImageEngine
 import kotlinx.coroutines.launch
 
 @Composable
@@ -124,21 +136,57 @@ private suspend fun PointerInputScope.detectDoubleTap(onDoubleTap: () -> Unit) {
     }
 }
 
+/**
+ * The picture's tonal distribution: the luminance silhouette with the three colour channels
+ * traced over it, the way a raw editor shows it. Tapping the plot drops the colour traces and
+ * leaves the plain luminance one, for when only the overall spread matters.
+ */
 @Composable
-fun Histogram(bins: IntArray, modifier: Modifier = Modifier) {
-    val maxBin = (bins.maxOrNull() ?: 1).coerceAtLeast(1).toFloat()
-    Canvas(
+fun Histogram(data: ImageEngine.Histograms, modifier: Modifier = Modifier) {
+    var channels by rememberSaveable { mutableStateOf(true) }
+    Box(
         modifier
-            .background(Color(0x33000000), RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0x99000000))
+            .clickable { channels = !channels },
     ) {
-        val binWidth = size.width / bins.size
-        bins.forEachIndexed { i, count ->
-            val barHeight = size.height * (count / maxBin)
-            drawRect(
-                color = Color(0xFFBFC6D1),
-                topLeft = Offset(i * binWidth, size.height - barHeight),
-                size = Size(binWidth, barHeight),
-            )
+        Canvas(Modifier.fillMaxSize().padding(3.dp)) {
+            val bars = data.luma.size
+            val barWidth = size.width / bars
+            // Luminance keeps its own scale, so a picture that leans on one channel still shows a
+            // full-height silhouette.
+            val lumaMax = (data.luma.maxOrNull() ?: 1).coerceAtLeast(1).toFloat()
+            for (i in 0 until bars) {
+                val barHeight = size.height * (data.luma[i] / lumaMax)
+                if (barHeight <= 0f) continue
+                drawRect(
+                    color = Color(0x59BFC6D1),
+                    topLeft = Offset(i * barWidth, size.height - barHeight),
+                    size = Size(barWidth, barHeight),
+                )
+            }
+            if (!channels) return@Canvas
+            // The three channels share one scale, so their heights compare with each other.
+            val max = maxOf(
+                data.red.maxOrNull() ?: 1,
+                data.green.maxOrNull() ?: 1,
+                data.blue.maxOrNull() ?: 1,
+            ).coerceAtLeast(1).toFloat()
+            channelTrace(data.red, max, Color(0xFFE8615E))
+            channelTrace(data.green, max, Color(0xFF5FC46A))
+            channelTrace(data.blue, max, Color(0xFF5B8FE6))
         }
     }
+}
+
+/** One channel traced as a crisp line over the silhouette. */
+private fun DrawScope.channelTrace(bins: IntArray, max: Float, color: Color) {
+    val path = Path()
+    val last = (bins.size - 1).coerceAtLeast(1)
+    val step = size.width / last
+    for (i in bins.indices) {
+        val y = size.height * (1f - (bins[i] / max).coerceIn(0f, 1f))
+        if (i == 0) path.moveTo(0f, y) else path.lineTo(i * step, y)
+    }
+    drawPath(path, color, style = Stroke(width = 1.4.dp.toPx()))
 }

@@ -126,8 +126,8 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
     private val _preview = MutableStateFlow<Bitmap?>(null)
     val preview: StateFlow<Bitmap?> = _preview.asStateFlow()
 
-    private val _histogram = MutableStateFlow(IntArray(256))
-    val histogram: StateFlow<IntArray> = _histogram.asStateFlow()
+    private val _histogram = MutableStateFlow(ImageEngine.Histograms())
+    val histogram: StateFlow<ImageEngine.Histograms> = _histogram.asStateFlow()
 
     private val _showOriginal = MutableStateFlow(false)
     val showOriginal: StateFlow<Boolean> = _showOriginal.asStateFlow()

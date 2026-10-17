@@ -3,6 +3,17 @@
 Editor de fotos para Android, no espírito do Lightroom: revelação (luz, cor, curvas), LUTs,
 máscaras (linear, radial, pincel, céu, objeto, pessoa) e controle remoto de câmera Lumix.
 
+## Interface
+
+As abas de ajuste ficam **na parte de baixo**, como no Lightroom: tocar numa aba abre o painel de
+sliders logo acima dela, e **tocar na mesma aba de novo fecha o painel**, deixando a foto com a tela
+inteira. As abas continuam ali embaixo e nenhuma fica acesa enquanto o painel está fechado.
+
+O histograma — a silhueta de luminância com os três canais RGB traçados por cima — fica no canto
+superior direito da **foto**, não numa faixa fixa: assim ele acompanha o quadro da imagem mesmo
+quando ela não preenche a área disponível. Um toque nele esconde os canais de cor e deixa só a
+luminância.
+
 ## Build
 
 Requer o JDK 21 e o Android SDK (o caminho fica em `local.properties`, que não vai pro repo).
