@@ -12,10 +12,10 @@ import kotlin.math.sqrt
 /**
  * Turns a [Mask] into a weight grid (0 = no effect, 1 = full effect) and samples it during the
  * render. Everything here is original code: analytic gradients for the geometric masks, a sky
- * detector that weighs colour, brightness and smoothness, a Lab tap-to-grow region for
- * object/background, and the offline segmentation model for people (falling back to the same
- * tap-to-grow when the model is unavailable). The content masks are finished with a guided filter
- * so their edges land on the picture rather than on the grid.
+ * detector that weighs colour, brightness and smoothness, and two offline models for the content
+ * masks — the interactive object segmenter behind "Objeto"/"Fundo" and the person model behind
+ * "Pessoa". Both fall back to a Lab tap-to-grow region when the model is unavailable, and both are
+ * finished with a guided filter so their edges land on the picture rather than on the grid.
  */
 object MaskEngine {
 
@@ -38,7 +38,7 @@ object MaskEngine {
             MaskType.RADIAL -> rasterRadial(data, gw, gh, aspect, mask)
             MaskType.BRUSH -> rasterBrush(data, gw, gh, mask)
             MaskType.SKY -> rasterSky(data, gw, gh, pixels, imgW, imgH, mask)
-            MaskType.SELECT -> rasterSelect(data, gw, gh, pixels, imgW, imgH, mask)
+            MaskType.SELECT -> rasterObject(data, gw, gh, pixels, imgW, imgH, mask)
             MaskType.SUBJECT -> rasterSubject(data, gw, gh, pixels, imgW, imgH, mask)
         }
         if (mask.invert) {
@@ -197,6 +197,32 @@ object MaskEngine {
             }
         }
         guidedRefine(data, lNorm, w, h, mask.feather)
+    }
+
+    /**
+     * Object mask from the offline interactive model: the union of the objects sitting under the
+     * tapped points, minus the ones tapped with Subtrair. This is Lightroom's "Select Objects" —
+     * one tap selects a whole object, whatever it is. Points are already normalised, and the model
+     * resamples its own 512x512 answer, so no grow region is needed.
+     *
+     * When the model is unavailable the classical colour-grown selection takes over, so the chip
+     * always does something.
+     */
+    private fun rasterObject(
+        data: FloatArray, w: Int, h: Int,
+        pixels: IntArray, imgW: Int, imgH: Int, mask: Mask,
+    ) {
+        val points = mask.points.ifEmpty { listOf(MaskPoint(mask.seedX, mask.seedY)) }
+        val adds = points.filter { !it.subtract }.map { it.x to it.y }
+        val subs = points.filter { it.subtract }.map { it.x to it.y }
+        val probs = ObjectSegmenter.segment(pixels, imgW, imgH, w, h, adds, subs)
+        if (probs == null) {
+            rasterSelect(data, w, h, pixels, imgW, imgH, mask)
+            return
+        }
+        System.arraycopy(probs, 0, data, 0, w * h)
+        val lab = labGrid(cellColors(pixels, imgW, imgH, w, h), w, h)
+        guidedRefine(data, FloatArray(w * h) { lab[it * 3] / 100f }, w, h, mask.feather)
     }
 
     /**

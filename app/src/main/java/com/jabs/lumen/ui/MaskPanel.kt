@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.jabs.lumen.engine.ObjectSegmenter
 import com.jabs.lumen.model.EditParams
 import com.jabs.lumen.model.Mask
 import com.jabs.lumen.model.MaskType
@@ -207,7 +208,11 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
             )
         }
         MaskType.SELECT -> {
-            MAdjust(vm, "Tolerância", mask.tolerance, 0f..0.5f, ::percent, { set(mask.copy(tolerance = it)) })
+            // The neural model has no tolerance knob: it already returns the object's own edge.
+            // The slider only matters on the classical fallback, so it is hidden when the model runs.
+            if (!ObjectSegmenter.available) {
+                MAdjust(vm, "Tolerância", mask.tolerance, 0f..0.5f, ::percent, { set(mask.copy(tolerance = it)) })
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FilterChip(
                     selected = ui.erasing,
@@ -231,6 +236,8 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
                 when {
                     ui.erasing -> "Toque no que deve sair da seleção."
                     mask.invert -> "Toque no objeto; a máscara mantém o resto da foto (o fundo)."
+                    ObjectSegmenter.available ->
+                        "Toque no objeto: a IA acha o contorno dele. Toque mais vezes para somar partes."
                     else -> "Toque no objeto. Toque mais vezes para somar ou subtrair partes."
                 },
                 style = MaterialTheme.typography.bodySmall,

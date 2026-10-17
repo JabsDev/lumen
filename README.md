@@ -12,6 +12,46 @@ JAVA_HOME=/caminho/para/jdk-21 ./gradlew :app:assembleRelease
 # APK em app/build/outputs/apk/release/app-release.apk
 ```
 
+O APK sai só com `arm64-v8a`. Para rodar num emulador x86_64, peça a ABI:
+
+```bash
+./gradlew :app:assembleDebug -PlumenAbis=arm64-v8a,x86_64
+```
+
+## Máscaras
+
+Cada máscara é um peso por pixel (0 = sem efeito, 1 = efeito total) calculado no
+`MaskEngine`, e todas podem ser invertidas e ajustadas com Difusão e Opacidade.
+
+| Chip | Como funciona |
+| --- | --- |
+| Linear / Radial | Gradiente analítico, sem modelo. |
+| Pincel | Traços com tamanho, apagar/refazer. |
+| Céu | Heurística de cor (azul), brilho e suavidade, presa à metade de cima. |
+| **Objeto** / **Fundo** | Segmentação por toque: um modelo TFLite offline devolve **o objeto sob o dedo**, seja ele qual for. Toques seguintes somam outros objetos; no modo Subtrair, eles saem. É o "Select Objects" do Lightroom. |
+| **Pessoa** | Modelo TFLite offline de pessoa. |
+
+Os dois modelos rodam no aparelho, sem rede, e ficam nos `assets` (descomprimidos no APK para
+serem mapeados em memória):
+
+- `magic_touch.tflite` (~6 MB, MediaPipe Interactive Segmenter / MagicTouch, Apache-2.0) — objeto;
+- `subject.tflite` (~250 KB, MediaPipe Selfie Segmenter, Apache-2.0) — pessoa.
+
+Se um modelo não carrega, o chip cai para uma seleção por cor (crescimento em Lab a partir do
+toque), então nunca fica inerte.
+
+### Conferindo os modelos
+
+Os dois têm teste instrumentado que roda no aparelho ou emulador e confere contra os números do
+**MediaPipe oficial** (não contra uma reimplementação nossa):
+
+```bash
+./gradlew :app:connectedDebugAndroidTest -PlumenAbis=x86_64
+```
+
+O pré-processamento do modelo de objeto é fácil de errar e está explicado no cabeçalho do
+`ObjectSegmenter.kt` — inclusive o que **não** funcionou.
+
 ## Atualizações automáticas
 
 O app se atualiza a partir dos **Releases** deste repositório:

@@ -24,6 +24,7 @@ import com.jabs.lumen.data.PhotoRepository
 import com.jabs.lumen.engine.DeviceProfile
 import com.jabs.lumen.engine.ImageEngine
 import com.jabs.lumen.engine.LutLibrary
+import com.jabs.lumen.engine.ObjectSegmenter
 import com.jabs.lumen.engine.Segmenter
 import com.jabs.lumen.engine.UpdateInfo
 import com.jabs.lumen.engine.Updater
@@ -203,6 +204,7 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         LutLibrary.init(app)
         // Load the offline segmentation model up front; it is tiny and masks may ask for it at any time.
         Segmenter.init(app)
+        ObjectSegmenter.init(app)
         viewModelScope.launch {
             _luts.value = withContext(Dispatchers.IO) { LutLibrary.scan() }
         }

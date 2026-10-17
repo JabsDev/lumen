@@ -12,6 +12,7 @@ android {
         applicationId = "com.jabs.lumen"
         minSdk = 29
         targetSdk = 35
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The release workflow passes these from the git tag (v1.2.3 -> name 1.2.3, code 10203).
         // A local build keeps the defaults below.
         versionCode = (project.findProperty("lumenVersionCode") as String?)?.toIntOrNull() ?: 1
@@ -20,7 +21,11 @@ android {
         buildConfigField("String", "GITHUB_REPO", "\"${project.findProperty("lumenRepo") ?: "jabsdev/lumen"}\"")
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // arm64-v8a only for what ships; an emulator build can ask for x86_64 with
+            // -PlumenAbis=arm64-v8a,x86_64.
+            abiFilters += (project.findProperty("lumenAbis") as String?)
+                ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?: listOf("arm64-v8a")
         }
         externalNativeBuild {
             cmake {
@@ -90,4 +95,8 @@ dependencies {
 
     // Offline person/subject segmentation for the "Pessoa" mask (bundled model, no network).
     implementation("org.tensorflow:tensorflow-lite:2.17.0")
+
+    // On-device tests for the bundled models. These never ship in the app.
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
