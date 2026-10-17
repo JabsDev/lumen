@@ -1,0 +1,16 @@
+build/
+.cxx/
+.gradle/
+.kotlin/
+local.properties
+*.iml
+.idea/
+
+# Signing material never goes in the repo; the CI reads it from a repository secret.
+*.jks
+*.keystore
+keystore.properties
+
+# Assorted editor / OS noise.
+.DS_Store
+captures/
