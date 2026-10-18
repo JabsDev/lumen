@@ -62,7 +62,7 @@ fun AdjustSlider(
                     }
                 } else Modifier
             )
-            .padding(vertical = 2.dp)
+            .padding(vertical = 6.dp)
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
@@ -146,8 +146,8 @@ fun Histogram(data: ImageEngine.Histograms, modifier: Modifier = Modifier) {
     var channels by rememberSaveable { mutableStateOf(true) }
     Box(
         modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0x99000000))
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0x8017191C))
             .clickable { channels = !channels },
     ) {
         Canvas(Modifier.fillMaxSize().padding(3.dp)) {

@@ -50,14 +50,14 @@ fun ColorMixerPanel(
     Column(modifier.padding(horizontal = 12.dp)) {
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MixerBand.entries.forEach { band ->
                 val active = band == selected
                 Box(
                     Modifier
-                        .size(if (active) 22.dp else 18.dp)
+                        .size(if (active) 24.dp else 20.dp)
                         .background(BAND_COLORS.getValue(band), CircleShape)
                         .border(if (active) 2.dp else 1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
                         .clickable { onSelectBand(band) }

@@ -57,12 +57,15 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -82,6 +85,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -105,9 +109,9 @@ private const val MAX_ZOOM = 8f
 private const val DOUBLE_TAP_ZOOM = 2.5f
 
 /** Size of the little histogram that sits on the corner of the photo. */
-private val HISTOGRAM_WIDTH = 168.dp
-private val HISTOGRAM_HEIGHT = 52.dp
-private val HISTOGRAM_MARGIN = 10.dp
+private val HISTOGRAM_WIDTH = 144.dp
+private val HISTOGRAM_HEIGHT = 46.dp
+private val HISTOGRAM_MARGIN = 8.dp
 
 @Composable
 fun EditorScreen(vm: LumenViewModel, photo: Photo) {
@@ -133,7 +137,7 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
             .navigationBarsPadding()
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = vm::close) {
@@ -144,7 +148,8 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                 modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             IconButton(onClick = vm::undo, enabled = canUndo) {
                 Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Desfazer")
@@ -258,7 +263,7 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
         }
 
         Box(
-            Modifier.weight(1f).fillMaxWidth().padding(8.dp)
+            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 0.dp, vertical = 4.dp)
                 .onSizeChanged { boxSize = it }
                 .then(if (canZoom) Modifier.transformable(transformState) else Modifier)
                 .pointerInput(maskEditing, maskUi.selectedId, maskUi.erasing) {
@@ -363,7 +368,7 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(8.dp)
-                        .background(Color(0x99000000), RoundedCornerShape(4.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
                         .clickable {
                             scale = MIN_ZOOM
                             panOffset = Offset.Zero
@@ -379,7 +384,7 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(8.dp)
-                        .background(Color(0x99000000), RoundedCornerShape(4.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
@@ -419,18 +424,6 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
             )
         }
 
-        if (panelOpen) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 6.dp),
-            ) {
-                items(Preset.entries) { preset ->
-                    AssistChip(onClick = { vm.applyPreset(preset) }, label = { Text(preset.label) })
-                }
-            }
-        }
-
         // The panel only exists while a tab is open: tapping the active tab again folds it away
         // and lets the picture grow into the space.
         if (panelOpen) {
@@ -440,12 +433,24 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .height(if (curvesTab) 300.dp else 215.dp)
+                    .height(if (curvesTab) 304.dp else 228.dp)
                     .then(if (curvesTab) Modifier else Modifier.verticalScroll(rememberScrollState()))
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
             ) {
                 when (tab) {
                     0 -> {
+                        Text(
+                            "Predefinições",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(Preset.entries) { preset ->
+                                AssistChip(onClick = { vm.applyPreset(preset) }, label = { Text(preset.label) })
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
                         Adjust(vm, "Exposição", params.exposure, -2f..2f, { "%+.2f EV".format(it) }) { p, v -> p.copy(exposure = v) }
                         Adjust(vm, "Contraste", params.contrast, -1f..1f, ::percent) { p, v -> p.copy(contrast = v) }
                         Adjust(vm, "Realces", params.highlights, -1f..1f, ::percent) { p, v -> p.copy(highlights = v) }
@@ -484,32 +489,53 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                     }
                     MASK_TAB -> MaskTab(vm, params, maskUi) { maskUi = it }
                 }
-                TextButton(onClick = vm::resetAll) { Text("Redefinir tudo") }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(
+                        onClick = vm::resetAll,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    ) { Text("Redefinir tudo") }
+                }
             }
         }
 
         // The tab strip lives at the bottom and never moves; it doubles as the fold/unfold.
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
             itemsIndexed(CATEGORIES) { i, title ->
-                FilterChip(
+                CategoryTab(
+                    title = title,
                     selected = panelOpen && tab == i,
                     onClick = {
-                        if (panelOpen && tab == i) {
-                            panelOpen = false
-                        } else {
+                        if (panelOpen && tab == i) panelOpen = false
+                        else {
                             tab = i
                             panelOpen = true
                         }
                     },
-                    label = { Text(title) },
                 )
             }
         }
     }
+}
+
+@Composable
+private fun CategoryTab(title: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    )
 }
 
 @Composable
@@ -543,25 +569,16 @@ private fun ColorTab(vm: LumenViewModel, params: EditParams) {
     var sub by rememberSaveable { mutableIntStateOf(0) }
     var band by remember { mutableStateOf(MixerBand.RED) }
     Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        SingleChoiceSegmentedButtonRow(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
         ) {
-            AssistChip(
-                onClick = { sub = 0 },
-                label = { Text("Básico") },
-                colors = if (sub == 0) chipActive() else chipIdle(),
-            )
-            AssistChip(
-                onClick = { sub = 1 },
-                label = { Text("Gradação") },
-                colors = if (sub == 1) chipActive() else chipIdle(),
-            )
-            AssistChip(
-                onClick = { sub = 2 },
-                label = { Text("Mistura") },
-                colors = if (sub == 2) chipActive() else chipIdle(),
-            )
+            listOf("Básico", "Gradação", "Mistura").forEachIndexed { i, label ->
+                SegmentedButton(
+                    selected = sub == i,
+                    onClick = { sub = i },
+                    shape = SegmentedButtonDefaults.itemShape(index = i, count = 3),
+                ) { Text(label) }
+            }
         }
         when (sub) {
             0 -> {
@@ -607,18 +624,6 @@ private fun ColorTab(vm: LumenViewModel, params: EditParams) {
         ) { Text("Confirmar ajustes de cor") }
     }
 }
-
-@Composable
-private fun chipActive() = AssistChipDefaults.assistChipColors(
-    labelColor = MaterialTheme.colorScheme.onPrimary,
-    containerColor = MaterialTheme.colorScheme.primary,
-)
-
-@Composable
-private fun chipIdle() = AssistChipDefaults.assistChipColors(
-    labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-    containerColor = Color.Transparent,
-)
 
 /** The available .cube looks as a row of chips, with how much of the chosen one to keep. */
 @Composable

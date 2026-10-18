@@ -7,7 +7,14 @@ máscaras (linear, radial, pincel, céu, objeto, pessoa) e controle remoto de c�
 
 As abas de ajuste ficam **na parte de baixo**, como no Lightroom: tocar numa aba abre o painel de
 sliders logo acima dela, e **tocar na mesma aba de novo fecha o painel**, deixando a foto com a tela
-inteira. As abas continuam ali embaixo e nenhuma fica acesa enquanto o painel está fechado.
+inteira. As abas continuam ali embaixo e nenhuma fica acesa enquanto o painel está fechado. As abas
+são só texto, sem contorno; a ativa fica em verde.
+
+O fundo é cinza-neutro (para não contaminar a leitura de cor ao editar) e o **verde-menta** marca
+ação e seleção: aba ativa, sliders, botões de confirmação, checks e o FAB de importar.
+
+As **predefinições** (Natural, Vívido, Quente, Frio, Filme…) vivem dentro da aba **Luz**, no topo do
+painel: são o ponto de partida do ajuste, e por isso não ocupam uma faixa permanente na tela.
 
 O histograma — a silhueta de luminância com os três canais RGB traçados por cima — fica no canto
 superior direito da **foto**, não numa faixa fixa: assim ele acompanha o quadro da imagem mesmo

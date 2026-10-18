@@ -2,6 +2,8 @@ package com.jabs.lumen.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,9 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -38,6 +40,7 @@ data class MaskUiState(
     val erasing: Boolean = false,
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MaskTab(
     vm: LumenViewModel,
@@ -66,7 +69,7 @@ fun MaskTab(
                     vm.commit()
                 }) {
                     Icon(
-                        if (mask.enabled) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
+                        if (mask.enabled) Icons.Filled.Visibility else Icons.Outlined.VisibilityOff,
                         contentDescription = if (mask.enabled) "Desativar" else "Ativar",
                     )
                 }
@@ -81,31 +84,32 @@ fun MaskTab(
                     vm.commit()
                     if (ui.selectedId == mask.id) onUi(ui.copy(selectedId = null))
                 }) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Excluir máscara")
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "Excluir máscara",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
 
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        Text(
+            "Criar máscara",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp, bottom = 8.dp),
+        )
+        FlowRow(
+            Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             AddChip("Linear", MaskType.LINEAR, vm) { onUi(ui.copy(selectedId = it)) }
             AddChip("Radial", MaskType.RADIAL, vm) { onUi(ui.copy(selectedId = it)) }
             AddChip("Pincel", MaskType.BRUSH, vm) { onUi(ui.copy(selectedId = it)) }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
             AddChip("Céu", MaskType.SKY, vm) { onUi(ui.copy(selectedId = it)) }
             AddChip("Objeto", MaskType.SELECT, vm, invert = false) { onUi(ui.copy(selectedId = it)) }
             AddChip("Fundo", MaskType.SELECT, vm, invert = true) { onUi(ui.copy(selectedId = it)) }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
             AddChip("Pessoa", MaskType.SUBJECT, vm) { onUi(ui.copy(selectedId = it)) }
         }
 
@@ -145,7 +149,8 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
     Text(
         mask.displayName(),
         style = MaterialTheme.typography.titleSmall,
-        modifier = Modifier.padding(top = 4.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
     )
     Row(verticalAlignment = Alignment.CenterVertically) {
         FilterChip(
@@ -153,7 +158,7 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
             onClick = { onUi(ui.copy(overlay = !ui.overlay)) },
             label = { Text("Sobrepor") },
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(12.dp))
         FilterChip(
             selected = mask.invert,
             onClick = { commitSet(mask.copy(invert = !mask.invert)) },
@@ -191,7 +196,7 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
                     onClick = { onUi(ui.copy(erasing = !ui.erasing)) },
                     label = { Text("Apagar") },
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(12.dp))
                 TextButton(onClick = { commitSet(mask.copy(strokes = emptyList())) }) { Text("Limpar") }
             }
             Text(
@@ -219,7 +224,7 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
                     onClick = { onUi(ui.copy(erasing = !ui.erasing)) },
                     label = { Text(if (ui.erasing) "Subtrair" else "Adicionar") },
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(12.dp))
                 TextButton(
                     onClick = { commitSet(mask.copy(points = emptyList())) },
                     enabled = mask.points.isNotEmpty(),
@@ -252,7 +257,7 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
                     onClick = { onUi(ui.copy(erasing = !ui.erasing)) },
                     label = { Text(if (ui.erasing) "Subtrair" else "Adicionar") },
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(12.dp))
                 TextButton(
                     onClick = { commitSet(mask.copy(points = emptyList())) },
                     enabled = mask.points.isNotEmpty(),
@@ -277,7 +282,7 @@ private fun MaskShapeControls(vm: LumenViewModel, mask: Mask, ui: MaskUiState, o
             )
         }
     }
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(12.dp))
 }
 
 @Composable
@@ -292,7 +297,12 @@ private fun MaskAdjustControls(vm: LumenViewModel, mask: Mask) {
         vm.commit()
     }
 
-    Text("Ajustes da máscara", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "Ajustes da máscara",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+    )
     MAdjust(vm, "Exposição", a.exposure, -2f..2f, { "%+.2f EV".format(it) }, { set(a.copy(exposure = it)) })
     MAdjust(vm, "Contraste", a.contrast, -1f..1f, ::mpercent, { set(a.copy(contrast = it)) })
     MAdjust(vm, "Realces", a.highlights, -1f..1f, ::mpercent, { set(a.copy(highlights = it)) })

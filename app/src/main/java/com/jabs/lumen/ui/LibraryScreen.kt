@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -23,8 +24,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,7 +42,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,8 +85,20 @@ fun LibraryScreen(vm: LumenViewModel) {
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
                 actions = {
-                    IconButton(onClick = { vm.checkForUpdates(manual = true) }) {
-                        Icon(Icons.Filled.SystemUpdate, contentDescription = "Verificar atualizações")
+                    var menu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { menu = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Mais opções")
+                        }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Verificar atualizações") },
+                                onClick = {
+                                    menu = false
+                                    vm.checkForUpdates(manual = true)
+                                },
+                            )
+                        }
                     }
                     IconButton(onClick = vm::openCamera) {
                         Icon(Icons.Filled.CameraAlt, contentDescription = "Conectar à câmera Lumix")
@@ -105,21 +124,30 @@ fun LibraryScreen(vm: LumenViewModel) {
                 Modifier.fillMaxSize().padding(padding).padding(32.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    "Importe fotos para começar.\nAs cópias ficam no app, então você edita offline, na viagem.",
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Outlined.PhotoLibrary,
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Importe fotos para começar.\nAs cópias ficam no app, então você edita offline, na viagem.",
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(120.dp),
+                columns = GridCells.Adaptive(140.dp),
                 contentPadding = PaddingValues(
-                    start = 4.dp, end = 4.dp, top = padding.calculateTopPadding() + 4.dp,
+                    start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 4.dp,
                     bottom = padding.calculateBottomPadding() + 88.dp,
                 ),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(photos, key = { it.id }) { photo ->
                     Thumbnail(vm, photo) { vm.open(photo) }
@@ -184,7 +212,7 @@ private fun Thumbnail(vm: LumenViewModel, photo: Photo, onClick: () -> Unit) {
     Box(
         Modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(6.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,

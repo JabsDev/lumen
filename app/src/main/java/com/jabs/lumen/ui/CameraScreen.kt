@@ -127,8 +127,8 @@ private fun FilesTab(vm: LumenViewModel, connected: Boolean, files: List<CameraI
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(images, key = { it.url }) { item ->
                     GalleryCell(
@@ -181,7 +181,7 @@ private fun GalleryCell(
     Box(
         Modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(6.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
@@ -194,7 +194,7 @@ private fun GalleryCell(
             )
         }
         if (checked) {
-            Box(Modifier.fillMaxSize().background(Color(0x663A7BD5)))
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)))
         }
         if (selectionMode) {
             Icon(
@@ -266,7 +266,7 @@ private fun PreviewPane(
         } else {
             Button(
                 onClick = onEdit,
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(20.dp),
             ) { Text("Editar") }
         }
     }

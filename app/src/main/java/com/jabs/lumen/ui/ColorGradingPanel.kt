@@ -138,7 +138,7 @@ fun GradingPanel(
         // Three equal wheels in a triangle: midtones on top, shadows and highlights below.
         GradingWheel("Meios-tons", midtones, { onChange(1, it) })
         Row(
-            Modifier.fillMaxWidth().padding(top = 14.dp),
+            Modifier.fillMaxWidth().padding(top = 18.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             GradingWheel("Sombras", shadows, { onChange(0, it) })
