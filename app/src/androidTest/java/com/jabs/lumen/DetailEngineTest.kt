@@ -2,14 +2,21 @@ package com.jabs.lumen
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Rect
+import android.media.ExifInterface
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.jabs.lumen.engine.DeviceProfile
 import com.jabs.lumen.engine.ImageEngine
+import com.jabs.lumen.engine.Orientation
 import com.jabs.lumen.model.EditParams
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -141,6 +148,66 @@ class DetailEngineTest {
         // A negative shift drags it rightwards, so the boundary pixel recovers the red.
         val back = ImageEngine.render(src, EditParams(chromaShiftRed = -0.02f))
         assertEquals(255, (pixels(back)[8 * w + boundary] shr 16) and 0xFF)
+    }
+
+    /** Writes [bmp] to the app cache as a JPEG and stamps it with an EXIF orientation. */
+    private fun exifJpeg(bmp: Bitmap, orientation: Int, name: String): File {
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(ctx.cacheDir, name)
+        FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+        ExifInterface(file.absolutePath).apply {
+            setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
+            saveAttributes()
+        }
+        return file
+    }
+
+    /**
+     * The 1:1 detail reads stored pixels through [android.graphics.BitmapRegionDecoder], which does
+     * not apply EXIF the way `ImageDecoder` (the preview) does. Without the fix a turned photo
+     * opened its 1:1 view on its side, so the crop must come back already upright.
+     */
+    @Test
+    fun theRegionDecodeAppliesTheExifQuarterTurn() {
+        // Stored landscape, red on top and blue below; EXIF 6 turns it 90° clockwise to show, so
+        // the upright photo is portrait with the red moved to the right.
+        val src = image(64, 32) { _, y -> if (y < 16) argb(255, 0, 0) else argb(0, 0, 255) }
+        val file = exifJpeg(src, ExifInterface.ORIENTATION_ROTATE_90, "exif_rotate_90.jpg")
+
+        val o = ImageEngine.orientation(file)
+        assertEquals("a orientação EXIF não foi lida", Orientation(1, false), o)
+        // The reported size is the upright, transposed one.
+        assertEquals(32 to 64, ImageEngine.dimensions(file))
+
+        val crop = ImageEngine.decodeRegion(file, Rect(0, 0, 32, 64), 32, 64, null, o)
+            ?: error("o recorte 1:1 saiu nulo")
+        assertEquals(32, crop.width)
+        assertEquals(64, crop.height)
+
+        val px = pixels(crop)
+        val row = 32
+        fun redAt(x: Int) = ((px[row * 32 + x] shr 16) and 0xFF) > 128
+        assertTrue("o lado direito deveria ser vermelho (girado)", redAt(28))
+        assertFalse("o lado esquerdo deveria ser azul (girado)", redAt(4))
+    }
+
+    @Test
+    fun theRegionDecodeAppliesAnExifMirror() {
+        val src = image(64, 32) { x, _ -> if (x < 32) argb(255, 0, 0) else argb(0, 0, 255) }
+        val file = exifJpeg(src, ExifInterface.ORIENTATION_FLIP_HORIZONTAL, "exif_flip_h.jpg")
+
+        val o = ImageEngine.orientation(file)
+        assertEquals(Orientation(0, true), o)
+        // A mirror never transposes.
+        assertEquals(64 to 32, ImageEngine.dimensions(file))
+
+        val crop = ImageEngine.decodeRegion(file, Rect(0, 0, 64, 32), 64, 32, null, o)
+            ?: error("o recorte 1:1 saiu nulo")
+        val px = pixels(crop)
+        val row = 16
+        fun redAt(x: Int) = ((px[row * 64 + x] shr 16) and 0xFF) > 128
+        assertTrue("o lado direito deveria ser vermelho (espelhado)", redAt(60))
+        assertFalse("o lado esquerdo deveria ser azul (espelhado)", redAt(4))
     }
 
     @Test

@@ -26,10 +26,13 @@ import com.jabs.lumen.data.PhotoRepository
 import com.jabs.lumen.engine.DeviceProfile
 import com.jabs.lumen.engine.ImageEngine
 import com.jabs.lumen.engine.LutLibrary
+import com.jabs.lumen.engine.Orientation
 import com.jabs.lumen.engine.ObjectSegmenter
 import com.jabs.lumen.engine.Segmenter
 import com.jabs.lumen.engine.UpdateInfo
 import com.jabs.lumen.engine.Updater
+import com.jabs.lumen.engine.orientedSize
+import com.jabs.lumen.engine.toImageSpace
 import com.jabs.lumen.model.EditParams
 import com.jabs.lumen.model.Preset
 import kotlinx.coroutines.Dispatchers
@@ -234,6 +237,12 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
     private var settleJob: Job? = null
     private var detailJob: Job? = null
     private var nativeDims: Pair<Int, Int>? = null
+
+    /**
+     * The file's EXIF turn. [nativeDims] is already upright, so this is only needed to map the
+     * 1:1 window back into the stored raster that [ImageEngine.decodeRegion] reads.
+     */
+    private var exif: Orientation = Orientation.NORMAL
     private var lastDetailRequest: DetailRect? = null
     private var detailDirty = true
 
@@ -271,6 +280,8 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
             val bmp = withContext(Dispatchers.IO) {
                 val decoded = runCatching { ImageEngine.decode(repo.file(photo), previewSize) }.getOrNull()
                 dims = runCatching { ImageEngine.dimensions(repo.file(photo)) }.getOrNull()
+                exif = runCatching { ImageEngine.orientation(repo.file(photo)) }
+                    .getOrDefault(Orientation.NORMAL)
                 // A saved look must be parsed before the first render, or it opens without it.
                 LutLibrary.warm(photo.edit.lutId)
                 decoded
@@ -320,6 +331,7 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         maskSourceFrom = null
         pendingFullRender = false
         nativeDims = null
+        exif = Orientation.NORMAL
         _nativeSize.value = null
         resetDetail()
     }
@@ -998,9 +1010,11 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         viewport: DetailRect,
         p: EditParams,
     ): Pair<Bitmap, Bitmap>? {
+        // dims is the upright size, so the rect comes out in upright space; the decoder turns it
+        // back into the stored raster (and the crop upright again) using the file's EXIF.
         val rect = toFileRect(viewport, dims, p.rotation, p.flipHorizontal)
         val cap = DeviceProfile.detailCeiling(heapMb)
-        val base = ImageEngine.decodeRegion(repo.file(photo), rect, dims.first, dims.second, cap)
+        val base = ImageEngine.decodeRegion(repo.file(photo), rect, dims.first, dims.second, cap, exif)
             ?: return null
         val reference = max(dims.first, dims.second)
         val edited = ImageEngine.render(base, p, reference)

@@ -12,6 +12,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import com.jabs.lumen.engine.MaskEngine
+import com.jabs.lumen.engine.oriented
+import com.jabs.lumen.engine.toImageSpace
 import com.jabs.lumen.model.BrushStroke
 import com.jabs.lumen.model.MaskType
 import com.jabs.lumen.model.MaskPoint

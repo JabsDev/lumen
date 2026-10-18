@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Rect
+import android.media.ExifInterface
 import com.jabs.lumen.model.Mask
 import com.jabs.lumen.model.MaskAdjust
 import com.jabs.lumen.model.MixerBand
@@ -130,22 +131,54 @@ object ImageEngine {
     }
 
     /**
-     * The pixel size written in the file's header, without decoding the pixels. Used to place the
-     * 1:1 viewport rect. Returns null for RAW (its header is not readable through BitmapFactory).
+     * The size the photo is shown at — the header's pixel size with its EXIF orientation applied,
+     * so width/height match the bytes [decode] hands back. Used to place the 1:1 viewport rect.
+     * Returns null for RAW (its header is not readable through BitmapFactory).
      */
     fun dimensions(file: File): Pair<Int, Int>? {
         if (RawDecoder.isRaw(file)) return null
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, opts)
-        if (opts.outWidth > 0 && opts.outHeight > 0) return opts.outWidth to opts.outHeight
-        return null
+        if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+        return if (orientation(file).swapsAxes) opts.outHeight to opts.outWidth
+        else opts.outWidth to opts.outHeight
     }
 
     /**
-     * Decodes a single rectangle of the file at native scale — the heart of the 1:1 detail. JPEG
-     * and PNG go through [BitmapRegionDecoder], which reads only the requested rows; anything it
-     * cannot open falls back to a capped full decode and a crop mapped back to the source size.
-     * Returns null when nothing could be read.
+     * The EXIF orientation of the file, expressed as the quarter turn and mirror needed to show its
+     * stored raster upright. `ImageDecoder` applies this by itself, but `BitmapRegionDecoder` and
+     * `BitmapFactory` read the raster as stored, so callers that use those must apply it here.
+     * Any unreadable or unsupported header (including RAW) is treated as already upright.
+     */
+    fun orientation(file: File): Orientation {
+        if (RawDecoder.isRaw(file)) return Orientation.NORMAL
+        return runCatching {
+            val exif = ExifInterface(file.absolutePath)
+            fromExif(exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL))
+        }.getOrDefault(Orientation.NORMAL)
+    }
+
+    private fun fromExif(value: Int): Orientation = when (value) {
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> Orientation(0, true)
+        ExifInterface.ORIENTATION_ROTATE_180 -> Orientation(2, false)
+        ExifInterface.ORIENTATION_FLIP_VERTICAL -> Orientation(2, true)
+        ExifInterface.ORIENTATION_TRANSPOSE -> Orientation(3, true)
+        ExifInterface.ORIENTATION_ROTATE_90 -> Orientation(1, false)
+        ExifInterface.ORIENTATION_TRANSVERSE -> Orientation(1, true)
+        ExifInterface.ORIENTATION_ROTATE_270 -> Orientation(3, false)
+        else -> Orientation.NORMAL
+    }
+
+    /**
+     * Decodes a single rectangle of the file at native scale — the heart of the 1:1 detail. [rect]
+     * and the source size are in **upright** (EXIF-applied) space, the same space the preview is
+     * shown in and the one [dimensions] reports.
+     *
+     * JPEG and PNG go through [BitmapRegionDecoder], which reads stored rows and therefore gets the
+     * rectangle turned back into the file's raster first and the result turned upright again; the
+     * EXIF is what used to be dropped here, which is why a turned photo opened its 1:1 view on its
+     * side. Anything the region decoder cannot open falls back to a capped [decode] (which is
+     * already upright, so it is cropped directly). Returns null when nothing could be read.
      */
     fun decodeRegion(
         file: File,
@@ -153,6 +186,7 @@ object ImageEngine {
         sourceWidth: Int,
         sourceHeight: Int,
         maxSize: Int? = null,
+        orientation: Orientation = Orientation.NORMAL,
     ): Bitmap? {
         if (sourceWidth <= 0 || sourceHeight <= 0) return null
         val clamped = Rect(rect).apply {
@@ -161,9 +195,13 @@ object ImageEngine {
             right = right.coerceIn(left + 1, sourceWidth)
             bottom = bottom.coerceIn(top + 1, sourceHeight)
         }
+        val rawWidth = if (orientation.swapsAxes) sourceHeight else sourceWidth
+        val rawHeight = if (orientation.swapsAxes) sourceWidth else sourceHeight
+        val rawRect = uprightRectToRaw(clamped, sourceWidth, sourceHeight, rawWidth, rawHeight, orientation)
+
         if (RawDecoder.isRaw(file)) {
             val full = runCatching { decodeRaw(file, null) }.getOrNull() ?: return null
-            return cropAndScale(full, clamped, sourceWidth, sourceHeight, maxSize)
+            return cropAndScale(full, rawRect, rawWidth, rawHeight, maxSize)
         }
 
         val region = runCatching {
@@ -173,15 +211,17 @@ object ImageEngine {
                     val opts = BitmapFactory.Options().apply {
                         inPreferredConfig = Bitmap.Config.ARGB_8888
                     }
-                    decoder.decodeRegion(clamped, opts)
+                    decoder.decodeRegion(rawRect, opts)
                 } finally {
                     decoder.recycle()
                 }
             }
         }.getOrNull()
-        if (region != null) return scaleTo(region, maxSize)
+        if (region != null) {
+            return oriented(scaleTo(region, maxSize), orientation.quarterTurns, orientation.flipHorizontal)
+        }
 
-        // HEIC/WebP and the like: one capped full decode, then crop with the source mapping.
+        // HEIC/WebP and the like: one capped full decode, already upright, cropped with the mapping.
         val full = runCatching { decode(file, null) }
             .getOrElse { runCatching { decode(file, DeviceProfile.detailCeiling(heapMb())) }.getOrNull() }
             ?: return null
