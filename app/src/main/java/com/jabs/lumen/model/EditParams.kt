@@ -11,6 +11,16 @@ data class EditParams(
     val blacks: Float = 0f,
     val clarity: Float = 0f,
     val texture: Float = 0f,
+    /** Detail: -1 softens, +1 sharpens (unsharp mask). */
+    val sharpness: Float = 0f,
+    /** Unsharp-mask radius, 0..1; the actual radius is derived from the render resolution. */
+    val sharpenRadius: Float = 0f,
+    /** Luminance noise reduction, 0..1. */
+    val noiseLuminance: Float = 0f,
+    /** Colour (chroma) noise reduction, 0..1. */
+    val noiseColor: Float = 0f,
+    /** How much texture the noise reduction keeps, 0..1 (0.5 = balanced). */
+    val noiseDetail: Float = 0.5f,
     val temperature: Float = 0f,
     val tint: Float = 0f,
     val saturation: Float = 0f,
@@ -19,6 +29,10 @@ data class EditParams(
     val distortion: Float = 0f,
     val chromaRed: Float = 0f,
     val chromaBlue: Float = 0f,
+    /** Non-radial (uniform) red/cyan fringe, as a fraction of the width, -0.02..0.02. */
+    val chromaShiftRed: Float = 0f,
+    /** Non-radial (uniform) blue/yellow fringe, as a fraction of the width, -0.02..0.02. */
+    val chromaShiftBlue: Float = 0f,
     val curves: CurveSet = CurveSet(),
     val grading: ColorGrading = ColorGrading(),
     val mixer: ColorMixer = ColorMixer(),
@@ -39,6 +53,11 @@ data class EditParams(
         .put("blacks", blacks.toDouble())
         .put("clarity", clarity.toDouble())
         .put("texture", texture.toDouble())
+        .put("sharpness", sharpness.toDouble())
+        .put("sharpenRadius", sharpenRadius.toDouble())
+        .put("noiseLuminance", noiseLuminance.toDouble())
+        .put("noiseColor", noiseColor.toDouble())
+        .put("noiseDetail", noiseDetail.toDouble())
         .put("temperature", temperature.toDouble())
         .put("tint", tint.toDouble())
         .put("saturation", saturation.toDouble())
@@ -47,6 +66,8 @@ data class EditParams(
         .put("distortion", distortion.toDouble())
         .put("chromaRed", chromaRed.toDouble())
         .put("chromaBlue", chromaBlue.toDouble())
+        .put("chromaShiftRed", chromaShiftRed.toDouble())
+        .put("chromaShiftBlue", chromaShiftBlue.toDouble())
         .put("rotation", rotation)
         .put("flipHorizontal", flipHorizontal)
         .put("lutId", lutId)
@@ -68,6 +89,11 @@ data class EditParams(
                 blacks = o.optDouble("blacks", 0.0).toFloat(),
                 clarity = o.optDouble("clarity", 0.0).toFloat(),
                 texture = o.optDouble("texture", 0.0).toFloat(),
+                sharpness = o.optDouble("sharpness", 0.0).toFloat(),
+                sharpenRadius = o.optDouble("sharpenRadius", 0.0).toFloat(),
+                noiseLuminance = o.optDouble("noiseLuminance", 0.0).toFloat(),
+                noiseColor = o.optDouble("noiseColor", 0.0).toFloat(),
+                noiseDetail = o.optDouble("noiseDetail", 0.5).toFloat(),
                 temperature = o.optDouble("temperature", 0.0).toFloat(),
                 tint = o.optDouble("tint", 0.0).toFloat(),
                 saturation = o.optDouble("saturation", 0.0).toFloat(),
@@ -76,6 +102,8 @@ data class EditParams(
                 distortion = o.optDouble("distortion", 0.0).toFloat(),
                 chromaRed = o.optDouble("chromaRed", 0.0).toFloat(),
                 chromaBlue = o.optDouble("chromaBlue", 0.0).toFloat(),
+                chromaShiftRed = o.optDouble("chromaShiftRed", 0.0).toFloat(),
+                chromaShiftBlue = o.optDouble("chromaShiftBlue", 0.0).toFloat(),
                 rotation = o.optInt("rotation", 0),
                 flipHorizontal = o.optBoolean("flipHorizontal", false),
                 lutId = o.optString("lutId", ""),
@@ -96,4 +124,6 @@ enum class Preset(val label: String, val params: EditParams) {
     COOL("Frio", EditParams(temperature = -0.3f, saturation = -0.05f)),
     FILM("Filme", EditParams(contrast = -0.15f, highlights = -0.25f, shadows = 0.2f, temperature = 0.1f, saturation = -0.15f, vignette = 0.3f)),
     MONO("P&B", EditParams(saturation = -1f, contrast = 0.25f)),
+    NITIDO("Nítido", EditParams(sharpness = 0.5f, sharpenRadius = 0.35f, clarity = 0.2f, noiseLuminance = 0.15f, noiseColor = 0.15f)),
+    RETRO_FRANJA("Retrô", EditParams(chromaShiftRed = 0.006f, chromaShiftBlue = -0.006f, sharpness = -0.1f, vignette = 0.25f)),
 }

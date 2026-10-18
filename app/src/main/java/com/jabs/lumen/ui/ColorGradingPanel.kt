@@ -32,6 +32,7 @@ import kotlin.math.sin
 fun ColorWheel(
     wheel: GradeWheel,
     onChange: (GradeWheel) -> Unit,
+    onCommit: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Canvas(
@@ -41,7 +42,7 @@ fun ColorWheel(
             .pointerInput(wheel) {
                 detectDragGestures(
                     onDragStart = { onChange(wheel.fromOffset(it, size.width.toFloat())) },
-                    onDragEnd = {},
+                    onDragEnd = { onCommit() },
                     onDragCancel = {},
                     onDrag = { change, _ ->
                         change.consume()
@@ -109,10 +110,11 @@ fun GradingWheel(
     title: String,
     wheel: GradeWheel,
     onChange: (GradeWheel) -> Unit,
+    onCommit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        ColorWheel(wheel, onChange, Modifier.size(124.dp))
+        ColorWheel(wheel, onChange, onCommit, Modifier.size(124.dp))
         Text(
             title,
             style = MaterialTheme.typography.labelMedium,
@@ -129,6 +131,7 @@ fun GradingPanel(
     highlights: GradeWheel,
     onChange: (Int, GradeWheel) -> Unit,
     onReset: () -> Unit,
+    onCommit: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -136,13 +139,13 @@ fun GradingPanel(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Three equal wheels in a triangle: midtones on top, shadows and highlights below.
-        GradingWheel("Meios-tons", midtones, { onChange(1, it) })
+        GradingWheel("Meios-tons", midtones, { onChange(1, it) }, onCommit)
         Row(
             Modifier.fillMaxWidth().padding(top = 18.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            GradingWheel("Sombras", shadows, { onChange(0, it) })
-            GradingWheel("Altas luzes", highlights, { onChange(2, it) })
+            GradingWheel("Sombras", shadows, { onChange(0, it) }, onCommit)
+            GradingWheel("Altas luzes", highlights, { onChange(2, it) }, onCommit)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             androidx.compose.material3.TextButton(onClick = onReset) { Text("Redefinir") }

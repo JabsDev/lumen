@@ -1,9 +1,12 @@
 package com.jabs.lumen.engine
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
 import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
+import android.graphics.Rect
 import com.jabs.lumen.model.Mask
 import com.jabs.lumen.model.MaskAdjust
 import com.jabs.lumen.model.MixerBand
@@ -15,9 +18,11 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 object ImageEngine {
@@ -124,16 +129,104 @@ object ImageEngine {
         )
     }
 
-    fun render(src: Bitmap, p: EditParams): Bitmap {
+    /**
+     * The pixel size written in the file's header, without decoding the pixels. Used to place the
+     * 1:1 viewport rect. Returns null for RAW (its header is not readable through BitmapFactory).
+     */
+    fun dimensions(file: File): Pair<Int, Int>? {
+        if (RawDecoder.isRaw(file)) return null
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, opts)
+        if (opts.outWidth > 0 && opts.outHeight > 0) return opts.outWidth to opts.outHeight
+        return null
+    }
+
+    /**
+     * Decodes a single rectangle of the file at native scale — the heart of the 1:1 detail. JPEG
+     * and PNG go through [BitmapRegionDecoder], which reads only the requested rows; anything it
+     * cannot open falls back to a capped full decode and a crop mapped back to the source size.
+     * Returns null when nothing could be read.
+     */
+    fun decodeRegion(
+        file: File,
+        rect: Rect,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        maxSize: Int? = null,
+    ): Bitmap? {
+        if (sourceWidth <= 0 || sourceHeight <= 0) return null
+        val clamped = Rect(rect).apply {
+            left = left.coerceIn(0, sourceWidth - 1)
+            top = top.coerceIn(0, sourceHeight - 1)
+            right = right.coerceIn(left + 1, sourceWidth)
+            bottom = bottom.coerceIn(top + 1, sourceHeight)
+        }
+        if (RawDecoder.isRaw(file)) {
+            val full = runCatching { decodeRaw(file, null) }.getOrNull() ?: return null
+            return cropAndScale(full, clamped, sourceWidth, sourceHeight, maxSize)
+        }
+
+        val region = runCatching {
+            @Suppress("DEPRECATION")
+            BitmapRegionDecoder.newInstance(file.absolutePath, false)?.let { decoder ->
+                try {
+                    val opts = BitmapFactory.Options().apply {
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    decoder.decodeRegion(clamped, opts)
+                } finally {
+                    decoder.recycle()
+                }
+            }
+        }.getOrNull()
+        if (region != null) return scaleTo(region, maxSize)
+
+        // HEIC/WebP and the like: one capped full decode, then crop with the source mapping.
+        val full = runCatching { decode(file, null) }
+            .getOrElse { runCatching { decode(file, DeviceProfile.detailCeiling(heapMb())) }.getOrNull() }
+            ?: return null
+        return cropAndScale(full, clamped, sourceWidth, sourceHeight, maxSize)
+    }
+
+    private fun cropAndScale(src: Bitmap, rect: Rect, sw: Int, sh: Int, maxSize: Int?): Bitmap? {
+        val sx = src.width.toFloat() / sw
+        val sy = src.height.toFloat() / sh
+        val l = (rect.left * sx).roundToInt().coerceIn(0, src.width - 1)
+        val t = (rect.top * sy).roundToInt().coerceIn(0, src.height - 1)
+        val r = (rect.right * sx).roundToInt().coerceIn(l + 1, src.width)
+        val b = (rect.bottom * sy).roundToInt().coerceIn(t + 1, src.height)
+        return scaleTo(Bitmap.createBitmap(src, l, t, r - l, b - t), maxSize)
+    }
+
+    private fun scaleTo(bmp: Bitmap, maxSize: Int?): Bitmap {
+        if (maxSize == null) return bmp
+        val longest = max(bmp.width, bmp.height)
+        if (longest <= maxSize) return bmp
+        val scale = maxSize.toFloat() / longest
+        return Bitmap.createScaledBitmap(
+            bmp,
+            (bmp.width * scale).roundToInt().coerceAtLeast(1),
+            (bmp.height * scale).roundToInt().coerceAtLeast(1),
+            true,
+        )
+    }
+
+    private fun heapMb(): Int = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
+
+    /**
+     * The single render entry point. [referenceLongSide] is the long side of the full-resolution
+     * source; the sharpness radius is derived from it so the same slider reads the same on the
+     * drag copy, the settled preview and a native 1:1 crop. Pass 0 to use [src]'s own size.
+     */
+    fun render(src: Bitmap, p: EditParams, referenceLongSide: Int = 0): Bitmap {
         val corrected = if (isLensIdentity(p)) src else applyLensCorrection(src, p)
-        val processed = if (isPixelIdentity(p)) corrected else applyAll(corrected, p)
+        val processed = if (isPixelIdentity(p)) corrected else applyAll(corrected, p, referenceLongSide)
         return applyGeometry(processed, p)
     }
 
-    fun renderFast(src: Bitmap, p: EditParams): Bitmap {
-        val corrected = if (isLensIdentity(p)) src else applyLensCorrection(src, p)
-        return applyGeometry(if (isPixelIdentity(p)) corrected else applyAll(corrected, p), p)
-    }
+    /** Kept as an alias: the fast and full renders share the pipeline, only the source differs. */
+    fun renderFast(src: Bitmap, p: EditParams, referenceLongSide: Int = 0): Bitmap =
+        render(src, p, referenceLongSide)
 
     private fun isPixelIdentity(p: EditParams): Boolean =
         p.curves.isIdentity() && isToneIdentity(p) &&
@@ -177,7 +270,7 @@ object ImageEngine {
      * Curves, tone, grading and the mixer all run in one pass over the pixels. Doing them
      * separately allocated a full bitmap per stage, which made dragging a slider crawl.
      */
-    private fun applyAll(src: Bitmap, p: EditParams): Bitmap {
+    private fun applyAll(src: Bitmap, p: EditParams, referenceLongSide: Int = 0): Bitmap {
         val w = src.width
         val h = src.height
         val pixels = IntArray(w * h)
@@ -199,7 +292,7 @@ object ImageEngine {
         val cy = (h - 1) / 2f
         val maxDist = max(sqrt(cx * cx + cy * cy), 1f)
 
-        val lumaSrc = if (useTone && (p.clarity != 0f || p.texture != 0f)) {
+        val lumaSrc = if (useTone && (p.clarity != 0f || p.texture != 0f || p.sharpness != 0f || p.noiseLuminance > 0f || p.noiseColor > 0f)) {
             FloatArray(w * h) { i ->
                 val c = pixels[i]
                 LUMA_R * ((c shr 16) and 0xFF) / 255f +
@@ -207,10 +300,47 @@ object ImageEngine {
                     LUMA_B * (c and 0xFF) / 255f
             }
         } else null
-        val clarityBase = if (lumaSrc != null && p.clarity != 0f) {
-            boxBlur(lumaSrc, w, h, max(4, max(w, h) / 60))
+
+        // Detail runs on the source luminance, before the tone curves: noise reduction first (so
+        // clarity/texture/sharpness never amplify grain), sharpening last. The radii are scaled by
+        // the render-to-source ratio so a slider reads the same on the drag copy, the settled
+        // preview and a native 1:1 crop. When nothing is set, every buffer below stays null and the
+        // pipeline is byte-for-byte the one it has always been.
+        val detailFactor = if (referenceLongSide > 0) max(w, h).toFloat() / referenceLongSide else 1f
+        val sharpenRadius = max(1, ((0.7f + p.sharpenRadius) * detailFactor).roundToInt())
+        val lumNrRadius = max(1, ((0.6f + 1.4f * p.noiseLuminance) * detailFactor).roundToInt())
+
+        val lumaNr = if (lumaSrc != null && p.noiseLuminance > 0f) {
+            boxBlur(lumaSrc, w, h, lumNrRadius)
         } else null
-        val textureBase = if (lumaSrc != null && p.texture != 0f) boxBlur(lumaSrc, w, h, 2) else null
+        val lumaWork = if (lumaSrc != null && lumaNr != null) {
+            // Edges (a big local difference) are left alone; flat grain is pulled towards the blur.
+            val edge = 0.015f + 0.085f * p.noiseLuminance
+            FloatArray(w * h) { i ->
+                val diff = lumaSrc[i] - lumaNr[i]
+                val border = 1f - clamp01(abs(diff) / edge)
+                val weight = p.noiseLuminance * border * (0.35f + 0.65f * p.noiseDetail)
+                clamp01(lumaSrc[i] - weight * diff)
+            }
+        } else null
+
+        // The detail bases are built on the denoised luminance when there is one, so clarity and
+        // sharpness never reopen the grain the NR just removed.
+        val baseLuma = lumaWork ?: lumaSrc
+        val clarityBase = if (baseLuma != null && p.clarity != 0f) {
+            boxBlur(baseLuma, w, h, max(4, max(w, h) / 60))
+        } else null
+        val textureBase = if (baseLuma != null && p.texture != 0f) boxBlur(baseLuma, w, h, 2) else null
+        val sharpBase = if (baseLuma != null && p.sharpness != 0f) {
+            boxBlur(baseLuma, w, h, sharpenRadius)
+        } else null
+
+        // Colour noise is broad, so it is blurred at half resolution — the buffers stay tiny even
+        // on a big settled preview, and the chroma is put back over the untouched luminance.
+        val chroma = if (lumaSrc != null && p.noiseColor > 0f) {
+            halfChromaBlur(pixels, w, h, max(1, (lumNrRadius * 1.5f).roundToInt()))
+        } else null
+        val chromaWeight = p.noiseColor * (0.4f + 0.6f * p.noiseDetail)
 
         val colorTools = if (!p.grading.isIdentity() || !p.mixer.isIdentity()) ColorTools(p.grading, p.mixer) else null
         // The look goes on last, so it grades the local adjustments and the colour work under it.
@@ -243,6 +373,35 @@ object ImageEngine {
             var g = ((c shr 8) and 0xFF) / 255f
             var b = (c and 0xFF) / 255f
 
+            if (lumaSrc != null && (lumaWork != null || chroma != null)) {
+                val sourceLuma = lumaSrc[i]
+                val workLuma = lumaWork?.get(i) ?: sourceLuma
+                if (lumaWork != null) {
+                    // Luminance NR travels as a delta so the colour of the pixel is kept.
+                    val delta = workLuma - sourceLuma
+                    if (delta != 0f) {
+                        r = clamp01(r + delta)
+                        g = clamp01(g + delta)
+                        b = clamp01(b + delta)
+                    }
+                }
+                if (chroma != null) {
+                    val ci = ((i / w) shr 1) * chroma.stride + ((i % w) shr 1)
+                    val coNow = r - b
+                    val t = b + coNow * 0.5f
+                    val cgNow = g - t
+                    val coNew = coNow + (chroma.co[ci] - coNow) * chromaWeight
+                    val cgNew = cgNow + (chroma.cg[ci] - cgNow) * chromaWeight
+                    val t2 = workLuma - cgNew * 0.5f
+                    g = cgNew + t2
+                    b = t2 - coNew * 0.5f
+                    r = b + coNew
+                }
+                r = clamp01(r)
+                g = clamp01(g)
+                b = clamp01(b)
+            }
+
             if (rgbLut != null && rLut != null && gLut != null && bLut != null) {
                 r = rLut[(rgbLut[(r * 255f).toInt().coerceIn(0, 255)] * 255f).toInt().coerceIn(0, 255)]
                 g = gLut[(rgbLut[(g * 255f).toInt().coerceIn(0, 255)] * 255f).toInt().coerceIn(0, 255)]
@@ -264,10 +423,20 @@ object ImageEngine {
                     p.whites * 0.25f * whiteWeight + p.blacks * 0.25f * blackWeight
                 if (clarityBase != null) {
                     val midWeight = 4f * luma * (1f - luma)
-                    toned += p.clarity * 0.6f * midWeight * gain * (lumaSrc!![i] - clarityBase[i])
+                    toned += p.clarity * 0.6f * midWeight * gain * (baseLuma!![i] - clarityBase[i])
                 }
                 if (textureBase != null) {
-                    toned += p.texture * 0.8f * gain * (lumaSrc!![i] - textureBase[i])
+                    toned += p.texture * 0.8f * gain * (baseLuma!![i] - textureBase[i])
+                }
+                if (sharpBase != null) {
+                    // Unsharp mask on the working luminance. The weight fades the effect at the very
+                    // dark and very bright ends, where a halo would be most visible, and the gain
+                    // grows with the amount requested.
+                    val detalhe = baseLuma!![i] - sharpBase[i]
+                    val flat = clamp01(toned)
+                    val haloWeight = 1f - (2f * flat - 1f).pow(2)
+                    val ganho = 1f + 2f * abs(p.sharpness)
+                    toned += p.sharpness * 0.5f * haloWeight * ganho * detalhe
                 }
                 toned = clamp01(toned)
                 val target = clamp01((toned - 0.5f) * contrast + 0.5f)
@@ -491,7 +660,16 @@ object ImageEngine {
     }
 
     private fun isLensIdentity(p: EditParams): Boolean =
-        p.distortion == 0f && p.chromaRed == 0f && p.chromaBlue == 0f
+        p.distortion == 0f && p.chromaRed == 0f && p.chromaBlue == 0f &&
+            p.chromaShiftRed == 0f && p.chromaShiftBlue == 0f
+
+    /**
+     * How far a colour channel is scaled from the centre. The negative side stays fine and linear
+     * (a precise correction for an existing fringe); the positive side grows quadratically, so a
+     * large "+" adds a fringe strong enough to read as a creative effect.
+     */
+    private fun chromaScale(v: Float): Float =
+        if (v >= 0f) 1f + 0.012f * v * v else 1f + 0.004f * v
 
     private fun applyLensCorrection(src: Bitmap, p: EditParams): Bitmap {
         val w = src.width
@@ -504,8 +682,12 @@ object ImageEngine {
         val cy = (h - 1) / 2f
         val maxR2 = max(cx * cx + cy * cy, 1f)
         val k = p.distortion * 0.25f
-        val redScale = 1f + p.chromaRed * 0.004f
-        val blueScale = 1f + p.chromaBlue * 0.004f
+        val redScale = chromaScale(p.chromaRed)
+        val blueScale = chromaScale(p.chromaBlue)
+        // A uniform sideways offset, the non-radial fringe an old lens leaves behind. Capped at
+        // ±2% of the width so the clamped sampler never shows hard edge stripes.
+        val redShift = (p.chromaShiftRed.coerceIn(-0.02f, 0.02f)) * w
+        val blueShift = (p.chromaShiftBlue.coerceIn(-0.02f, 0.02f)) * w
 
         val process = { fromRow: Int, untilRow: Int, _: FloatArray ->
             for (y in fromRow until untilRow) {
@@ -513,9 +695,9 @@ object ImageEngine {
                     val dx = x - cx
                     val dy = y - cy
                     val f = 1f + k * (dx * dx + dy * dy) / maxR2
-                    val r = sampleChannel(pixels, w, h, cx + dx * f * redScale, cy + dy * f * redScale, 16)
+                    val r = sampleChannel(pixels, w, h, cx + dx * f * redScale + redShift, cy + dy * f * redScale, 16)
                     val g = sampleChannel(pixels, w, h, cx + dx * f, cy + dy * f, 8)
-                    val b = sampleChannel(pixels, w, h, cx + dx * f * blueScale, cy + dy * f * blueScale, 0)
+                    val b = sampleChannel(pixels, w, h, cx + dx * f * blueScale + blueShift, cy + dy * f * blueScale, 0)
                     out[y * w + x] = (0xFF shl 24) or (toChannel(r) shl 16) or (toChannel(g) shl 8) or toChannel(b)
                 }
             }
@@ -548,6 +730,7 @@ object ImageEngine {
     private fun isToneIdentity(p: EditParams): Boolean =
         p.exposure == 0f && p.contrast == 0f && p.highlights == 0f && p.shadows == 0f &&
             p.whites == 0f && p.blacks == 0f && p.clarity == 0f && p.texture == 0f &&
+            p.sharpness == 0f && p.noiseLuminance == 0f && p.noiseColor == 0f &&
             p.temperature == 0f && p.tint == 0f && p.saturation == 0f && p.vibrance == 0f &&
             p.vignette == 0f
 
@@ -568,6 +751,37 @@ object ImageEngine {
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         Canvas(out).drawBitmap(src, m, null)
         return out
+    }
+
+    /** Chroma planes of a source, sampled at half resolution and blotted. */
+    private class Chroma(val co: FloatArray, val cg: FloatArray, val stride: Int)
+
+    /**
+     * Blurs the source's chroma at half resolution in the YCoCg-like space (Co = R − B,
+     * Cg = G − (R+B)/2). The luminance is not part of the plane, so it can be put back exactly,
+     * which is what keeps colour noise reduction from smearing detail.
+     */
+    private fun halfChromaBlur(pixels: IntArray, w: Int, h: Int, radius: Int): Chroma {
+        val sw = (w + 1) / 2
+        val sh = (h + 1) / 2
+        val co = FloatArray(sw * sh)
+        val cg = FloatArray(sw * sh)
+        for (sy in 0 until sh) {
+            val y = (sy * 2).coerceAtMost(h - 1)
+            var si = sy * sw
+            val row = y * w
+            for (sx in 0 until sw) {
+                val x = (sx * 2).coerceAtMost(w - 1)
+                val c = pixels[row + x]
+                val rf = ((c shr 16) and 0xFF) / 255f
+                val gf = ((c shr 8) and 0xFF) / 255f
+                val bf = (c and 0xFF) / 255f
+                co[si] = rf - bf
+                cg[si] = gf - (rf + bf) * 0.5f
+                si++
+            }
+        }
+        return Chroma(boxBlur(co, sw, sh, radius), boxBlur(cg, sw, sh, radius), sw)
     }
 
     private fun boxBlur(src: FloatArray, w: Int, h: Int, r: Int): FloatArray {

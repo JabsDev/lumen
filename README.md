@@ -21,6 +21,42 @@ superior direito da **foto**, não numa faixa fixa: assim ele acompanha o quadro
 quando ela não preenche a área disponível. Um toque nele esconde os canais de cor e deixa só a
 luminância.
 
+### Prévia em três níveis
+
+A prévia trabalha em três níveis, e é isso que permite julgar nitidez, ruído e franja de verdade:
+
+| Nível | Resolução | Quando aparece |
+| --- | --- | --- |
+| Arrasto | cópia pequena | enquanto o dedo move o slider — resposta imediata |
+| Tela | resolução da tela (com folga, limitada pelo heap) | ~180 ms depois de soltar — **qualquer** painel volta sozinho, sem "Confirmar" |
+| Detalhe 1:1 | **recorte nativo** do que está visível | ao ampliar além de ~1,5× ou tocar em **1:1** |
+
+O botão **1:1** ao lado do indicador de zoom salta para o pixel real; um selo discreto
+**"detalhe 1:1"** avisa quando o recorte nativo já está na tela (e "nítido…" enquanto ele é montado).
+O mesmo recorte nativo alimenta a comparação, para o "antes" ter o mesmo pixel do "depois".
+
+O ícone **Comparar** abre uma **divisão arrastável**: a metade esquerda mostra o original, a direita
+o editado — ambas em 1:1, com a alça alinhada — e rótulos "ANTES"/"DEPOIS" discretos nos cantos.
+Segurar o ícone continua fazendo o "peek" do original.
+
+### Aba Detalhe
+
+Reúne **Nitidez** (nitidez no "+", suavização no "−"), o **Raio** do unsharp mask, a **Redução de
+ruído** de **Luminância** e de **Cor** e **Preservar detalhe**, com a dica de ampliar até 1:1 para
+julgar o resultado. A ordem interna segue a revelação clássica — reduz ruído, ajusta o tom, nitidiza
+por último — para a nitidez não amplificar o ruído.
+
+### Aba Lente: franja cromática add + remove
+
+A **Franja R/C** e a **Franja A/A** são bidirecionais e dizem o sentido no próprio rótulo
+(**− reduz · + adiciona**): o lado "−" continua fino, para correção precisa, e o "+" tem mais
+alcance, para virar efeito criativo. **Deslocar R/C** e **Deslocar A/A** somam um deslocamento
+uniforme de canal — a franja lateral "retrô", assimétrica, que o escalonamento radial sozinho não
+produz.
+
+As capturas das telas novas estão em `docs/ui-depois/` (níveis de prévia, aba Detalhe, rótulos da
+Lente, franja adicionada e a comparação em divisão).
+
 ## Build
 
 Requer o JDK 21 e o Android SDK (o caminho fica em `local.properties`, que não vai pro repo).

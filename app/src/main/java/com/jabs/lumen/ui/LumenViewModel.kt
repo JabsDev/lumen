@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.util.LruCache
+import android.util.Size
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -49,18 +51,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 private val initialDragSize = DeviceProfile.initialDragSize()
-private val initialPreviewSize = DeviceProfile.initialPreviewSize(initialDragSize)
+
+/** The app heap in MB; sizes the settled preview and the 1:1 detail budget. */
+private val heapMb = (Runtime.getRuntime().maxMemory() / (1024 * 1024)).toInt()
 private const val THUMB_SIZE = 360
 private const val MAX_HISTORY = 100
 
 /** Moving previews with masks on are rendered at this fraction of the working copy. */
 private const val MASK_DRAG_SCALE = 0.5f
 
-/** How long after the finger lifts the full-size preview is rebuilt. */
+/** How long after the finger lifts the full-size (screen) preview is rebuilt. */
 private const val SETTLE_DELAY_MS = 180L
+
+/** How long the view must stop moving before the 1:1 detail is rebuilt. */
+private const val DETAIL_DELAY_MS = 150L
 private const val CONNECT_TIMEOUT_MS = 20_000L
 private const val ACCESS_TIMEOUT_MS = 90_000L
 private const val ACCESS_POLL_MS = 2_000L
@@ -86,6 +96,12 @@ data class ImportProgress(val bytes: Long, val total: Long) {
     val fraction: Float get() = if (total > 0L) (bytes.toFloat() / total).coerceIn(0f, 1f) else 0f
     val megabytes: String get() = "%.1f / %.1f MB".format(bytes / 1_048_576f, total / 1_048_576f)
 }
+
+/**
+ * The visible slice of the picture, in normalised coordinates of the displayed (turned and
+ * mirrored) image. The 1:1 detail is rendered from exactly this window.
+ */
+data class DetailRect(val u0: Float, val v0: Float, val u1: Float, val v1: Float)
 
 /** The in-app updater's small state machine, surfaced by the Library screen dialog. */
 sealed interface UpdateState {
@@ -125,6 +141,28 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _preview = MutableStateFlow<Bitmap?>(null)
     val preview: StateFlow<Bitmap?> = _preview.asStateFlow()
+
+    /** The edited crop of the visible window at native scale — the "1:1" level. */
+    private val _detail = MutableStateFlow<Bitmap?>(null)
+    val detail: StateFlow<Bitmap?> = _detail.asStateFlow()
+
+    /** The same crop, unedited, so the before/after compare is honest at 1:1. */
+    private val _detailOriginal = MutableStateFlow<Bitmap?>(null)
+    val detailOriginal: StateFlow<Bitmap?> = _detailOriginal.asStateFlow()
+
+    private val _detailRect = MutableStateFlow<DetailRect?>(null)
+    val detailRect: StateFlow<DetailRect?> = _detailRect.asStateFlow()
+
+    private val _detailReady = MutableStateFlow(false)
+    val detailReady: StateFlow<Boolean> = _detailReady.asStateFlow()
+
+    /** Bumped whenever the 1:1 detail is invalidated, so the screen knows to ask again. */
+    private val _detailVersion = MutableStateFlow(0)
+    val detailVersion: StateFlow<Int> = _detailVersion.asStateFlow()
+
+    /** Native size of the open file after the turn (swapped when rotated), or null if unknown. */
+    private val _nativeSize = MutableStateFlow<Size?>(null)
+    val nativeSize: StateFlow<Size?> = _nativeSize.asStateFlow()
 
     private val _histogram = MutableStateFlow(ImageEngine.Histograms())
     val histogram: StateFlow<ImageEngine.Histograms> = _histogram.asStateFlow()
@@ -186,11 +224,18 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
     private var committed = EditParams()
     private var lastRenderedParams: EditParams? = null
     private var lastRenderedGeometry: Pair<Int, Boolean>? = null
-    private var previewSize: Int = initialPreviewSize
+
+    /** Whether the last accepted render was the moving (drag) copy or the settled one. */
+    private var lastRenderWasFast: Boolean? = null
+    private var previewSize: Int = 0
     private var dragSize: Int = initialDragSize
     private var renderJob: Job? = null
     private var histogramJob: Job? = null
     private var settleJob: Job? = null
+    private var detailJob: Job? = null
+    private var nativeDims: Pair<Int, Int>? = null
+    private var lastDetailRequest: DetailRect? = null
+    private var detailDirty = true
 
     private var lumix: LumixClient? = null
     private var liveViewJob: Job? = null
@@ -205,6 +250,9 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         // Load the offline segmentation model up front; it is tiny and masks may ask for it at any time.
         Segmenter.init(app)
         ObjectSegmenter.init(app)
+        // The settled preview is sized against the display and the heap, not a fixed 1400 px.
+        val metrics = app.resources.displayMetrics
+        previewSize = DeviceProfile.screenPreviewSize(max(metrics.widthPixels, metrics.heightPixels), heapMb)
         viewModelScope.launch {
             _luts.value = withContext(Dispatchers.IO) { LutLibrary.scan() }
         }
@@ -219,8 +267,10 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
     fun open(photo: Photo) {
         viewModelScope.launch {
             _importProgress.value = ImportProgress(0L, 0L)
+            var dims: Pair<Int, Int>? = null
             val bmp = withContext(Dispatchers.IO) {
                 val decoded = runCatching { ImageEngine.decode(repo.file(photo), previewSize) }.getOrNull()
+                dims = runCatching { ImageEngine.dimensions(repo.file(photo)) }.getOrNull()
                 // A saved look must be parsed before the first render, or it opens without it.
                 LutLibrary.warm(photo.edit.lutId)
                 decoded
@@ -236,6 +286,10 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
             undoStack.clear()
             redoStack.clear()
             updateHistoryFlags()
+            // The 1:1 detail is a native crop, so the native size drives its viewport rect.
+            nativeDims = dims
+            _nativeSize.value = dims?.let { orientedSize(it.first, it.second, photo.edit.rotation) }
+            resetDetail()
             _original.value = bmp
             dragSource = withContext(Dispatchers.Default) {
                 val scale = dragSize / max(bmp.width, bmp.height).toFloat()
@@ -257,6 +311,7 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
     fun close() {
         renderJob?.cancel()
         settleJob?.cancel()
+        detailJob?.cancel()
         _openId.value = null
         _original.value = null
         _preview.value = null
@@ -264,11 +319,28 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         maskSource = null
         maskSourceFrom = null
         pendingFullRender = false
+        nativeDims = null
+        _nativeSize.value = null
+        resetDetail()
+    }
+
+    /** Drops the 1:1 detail bitmaps and marks it stale, so it is rebuilt on the next 1:1 look. */
+    private fun resetDetail() {
+        _detail.value = null
+        _detailOriginal.value = null
+        _detailRect.value = null
+        _detailReady.value = false
+        lastDetailRequest = null
+        detailDirty = true
+        _detailVersion.value++
     }
 
     fun updateLive(transform: (EditParams) -> EditParams) {
         _params.value = transform(_params.value)
         scheduleRender(fast = true)
+        // Every live edit ends up settling on its own: no panel can forget to commit, so no panel
+        // can leave the picture stuck on the low-resolution drag copy.
+        settleRender()
     }
 
     fun commit() {
@@ -281,8 +353,9 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         updateHistoryFlags()
         persist(current)
         // The moving preview is a small working copy; the full-size pass waits until the
-        // gesture is over and then replaces it.
+        // gesture is over and then replaces it. The 1:1 detail is now stale.
         pendingFullRender = true
+        resetDetail()
         settleRender()
     }
 
@@ -761,6 +834,7 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         _params.value = p
         updateHistoryFlags()
         persist(p)
+        resetDetail()
         scheduleRender(fast = false)
     }
 
@@ -768,27 +842,36 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         val full = _original.value ?: return
         val src = if (fast) (dragSource ?: full) else full
         val p = _params.value
+        // A turn swaps the native size, which the 1:1 viewport math needs.
+        nativeDims?.let { _nativeSize.value = orientedSize(it.first, it.second, p.rotation) }
         val key = if (fast) p.copy(rotation = 0, flipHorizontal = false) else p
         // Turn and mirror are stripped from the drag key, so they are watched separately —
         // otherwise a rotate would produce the same key as before and never re-render.
         val geometry = p.rotation to p.flipHorizontal
-        if (key == lastRenderedParams && geometry == lastRenderedGeometry && _preview.value != null) return
+        // Skip only when nothing changed *and* the last render was at the same level. A settled
+        // pass must always follow a drag copy, even with identical parameters — otherwise the
+        // picture would sit on the low-resolution drag copy forever.
+        if (key == lastRenderedParams && geometry == lastRenderedGeometry &&
+            _preview.value != null && lastRenderWasFast == fast
+        ) return
         lastRenderedParams = key
         lastRenderedGeometry = geometry
+        lastRenderWasFast = fast
+        if (fast) pendingFullRender = true
         renderJob?.cancel()
         // The settled full-size pass waits for the finger; a new drag pushes it back again.
         if (fast) settleJob?.cancel()
         if (!fast) histogramJob?.cancel()
+        val reference = nativeDims?.let { max(it.first, it.second) } ?: 0
         renderJob = viewModelScope.launch {
             val started = System.nanoTime()
-            val out = withContext(Dispatchers.Default) { ImageEngine.renderFast(maskedDragSource(src, p), p) }
+            val out = withContext(Dispatchers.Default) {
+                ImageEngine.render(maskedDragSource(src, p), p, reference)
+            }
             val elapsed = (System.nanoTime() - started) / 1_000_000
             _preview.value = out
-            if (fast) measureRender(elapsed)
-            if (key != _renderedKey()) lastRenderedParams = null
             if (fast) {
-                // Dragging: skip the histogram and settle at full size when the finger lifts.
-                pendingFullRender = true
+                measureRender(elapsed)
             } else {
                 pendingFullRender = false
                 histogramJob = viewModelScope.launch {
@@ -798,8 +881,6 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-
-    private fun _renderedKey(): EditParams? = lastRenderedParams
 
     private fun activeMasks(p: EditParams): Boolean =
         p.masks.any { it.enabled && !it.adjust.isIdentity() }
@@ -851,19 +932,113 @@ class LumenViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Called after a slider settles so the full-size preview replaces the fast one. */
+    /**
+     * Called after any edit settles (slider release, commit or, unlike before, simply going idle)
+     * so the full-size screen preview replaces the drag copy. One timer is shared: each new event
+     * pushes it back, so a run of small adjustments only pays one settled render.
+     */
     private fun settleRender() {
         if (!pendingFullRender) return
-        pendingFullRender = false
-        // A short wait keeps a run of small adjustments from paying a full-size render each time.
         settleJob?.cancel()
         settleJob = viewModelScope.launch {
             delay(SETTLE_DELAY_MS)
-            scheduleRender(fast = false)
+            if (pendingFullRender) {
+                pendingFullRender = false
+                scheduleRender(fast = false)
+            }
         }
     }
 
     private var pendingFullRender = false
+
+    /**
+     * Builds the 1:1 detail for the given visible window: the native crop of the file, rendered
+     * with the current parameters (and, for the compare, with none). Debounced and cancelable so a
+     * moving finger never pays for it. Does nothing when the file's exact size is unknown.
+     */
+    fun requestDetail(viewport: DetailRect) {
+        val photo = openPhoto.value ?: return
+        val dims = nativeDims ?: return
+        val p = _params.value
+        val clamped = DetailRect(
+            viewport.u0.coerceIn(0f, 1f),
+            viewport.v0.coerceIn(0f, 1f),
+            viewport.u1.coerceIn(0f, 1f),
+            viewport.v1.coerceIn(0f, 1f),
+        )
+        if (clamped.u1 - clamped.u0 < 1e-3f || clamped.v1 - clamped.v0 < 1e-3f) return
+        // Nothing to do when the same window is already showing fresh, sharp pixels.
+        if (!detailDirty && _detail.value != null && nearEnough(lastDetailRequest, clamped)) return
+        lastDetailRequest = clamped
+        detailDirty = false
+        detailJob?.cancel()
+        _detailReady.value = false
+        detailJob = viewModelScope.launch {
+            delay(DETAIL_DELAY_MS)
+            val result = withContext(Dispatchers.Default) {
+                runCatching { buildDetail(photo, dims, clamped, p) }.getOrNull()
+            } ?: return@launch
+            _detail.value = result.first
+            _detailOriginal.value = result.second
+            _detailRect.value = clamped
+            _detailReady.value = true
+        }
+    }
+
+    private fun nearEnough(a: DetailRect?, b: DetailRect): Boolean {
+        if (a == null) return false
+        val eps = 0.01f
+        return abs(a.u0 - b.u0) < eps && abs(a.v0 - b.v0) < eps &&
+            abs(a.u1 - b.u1) < eps && abs(a.v1 - b.v1) < eps
+    }
+
+    private fun buildDetail(
+        photo: Photo,
+        dims: Pair<Int, Int>,
+        viewport: DetailRect,
+        p: EditParams,
+    ): Pair<Bitmap, Bitmap>? {
+        val rect = toFileRect(viewport, dims, p.rotation, p.flipHorizontal)
+        val cap = DeviceProfile.detailCeiling(heapMb)
+        val base = ImageEngine.decodeRegion(repo.file(photo), rect, dims.first, dims.second, cap)
+            ?: return null
+        val reference = max(dims.first, dims.second)
+        val edited = ImageEngine.render(base, p, reference)
+        // The "before" is the very same crop, only oriented to line up with the edited side.
+        val before = ImageEngine.render(
+            base,
+            EditParams(rotation = p.rotation, flipHorizontal = p.flipHorizontal),
+            reference,
+        )
+        return edited to before
+    }
+
+    /**
+     * Maps the visible window (normalised, in displayed space) to a pixel rectangle in the file's
+     * own space, so the region decoder reads the right rows. The rotation and mirror are undone
+     * here and re-applied by the render, which is what keeps the two sides aligned.
+     */
+    private fun toFileRect(v: DetailRect, dims: Pair<Int, Int>, rotation: Int, flip: Boolean): Rect {
+        val (nw, nh) = dims
+        val corners = listOf(v.u0 to v.v0, v.u1 to v.v0, v.u1 to v.v1, v.u0 to v.v1)
+        var minX = 1f
+        var minY = 1f
+        var maxX = 0f
+        var maxY = 0f
+        for ((u, w) in corners) {
+            val f = toImageSpace(u, w, rotation, flip)
+            minX = min(minX, f.first)
+            maxX = max(maxX, f.first)
+            minY = min(minY, f.second)
+            maxY = max(maxY, f.second)
+        }
+        return Rect(
+            (minX * nw).roundToInt().coerceIn(0, nw - 1),
+            (minY * nh).roundToInt().coerceIn(0, nh - 1),
+            (maxX * nw).roundToInt().coerceIn(1, nw),
+            (maxY * nh).roundToInt().coerceIn(1, nh),
+        )
+    }
 
     private fun persist(p: EditParams) {
         val id = _openId.value ?: return

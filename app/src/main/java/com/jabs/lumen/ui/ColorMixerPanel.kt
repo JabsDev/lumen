@@ -44,6 +44,7 @@ fun ColorMixerPanel(
     onSelectBand: (MixerBand) -> Unit,
     onChange: (MixerBand, BandAdjust) -> Unit,
     onReset: () -> Unit,
+    onCommit: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val adjust = mixer[selected]
@@ -65,9 +66,9 @@ fun ColorMixerPanel(
             }
         }
         Column(Modifier.padding(top = 8.dp)) {
-            MixSlider("Matiz", adjust.hue, { onChange(selected, adjust.copy(hue = it)) })
-            MixSlider("Saturação", adjust.saturation, { onChange(selected, adjust.copy(saturation = it)) })
-            MixSlider("Luminosidade", adjust.luminance, { onChange(selected, adjust.copy(luminance = it)) })
+            MixSlider("Matiz", adjust.hue, onCommit, { onChange(selected, adjust.copy(hue = it)) })
+            MixSlider("Saturação", adjust.saturation, onCommit, { onChange(selected, adjust.copy(saturation = it)) })
+            MixSlider("Luminosidade", adjust.luminance, onCommit, { onChange(selected, adjust.copy(luminance = it)) })
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = onReset) { Text("Redefinir") }
@@ -76,7 +77,7 @@ fun ColorMixerPanel(
 }
 
 @Composable
-private fun MixSlider(label: String, value: Float, onChange: (Float) -> Unit) {
+private fun MixSlider(label: String, value: Float, onCommit: () -> Unit, onChange: (Float) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier
@@ -90,7 +91,7 @@ private fun MixSlider(label: String, value: Float, onChange: (Float) -> Unit) {
             range = -1f..1f,
             display = { "%+d".format((it * 100f).roundToInt()) },
             onValueChange = onChange,
-            onValueChangeFinished = {},
+            onValueChangeFinished = onCommit,
             onReset = { onChange(0f) },
         )
     }

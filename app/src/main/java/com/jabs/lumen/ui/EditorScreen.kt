@@ -1,10 +1,9 @@
 package com.jabs.lumen.ui
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Matrix
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
@@ -80,8 +79,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -96,12 +97,19 @@ import com.jabs.lumen.model.EditParams
 import com.jabs.lumen.model.MixerBand
 import com.jabs.lumen.model.Preset
 import com.jabs.lumen.model.ToneCurve
+import kotlin.math.max
 import kotlin.math.roundToInt
 
-private val CATEGORIES = listOf("Luz", "Curvas", "Cor", "Efeitos", "Lente", "Geometria", "Máscara")
+private val CATEGORIES = listOf("Luz", "Curvas", "Cor", "Efeitos", "Detalhe", "Lente", "Geometria", "Máscara")
 
 /** Index of the "Máscara" tab, where one finger paints instead of panning or zooming. */
-private const val MASK_TAB = 6
+private const val MASK_TAB = 7
+
+/** Tab that holds sharpening and noise reduction. */
+private const val DETAIL_TAB = 4
+
+/** Zoom past which the native 1:1 detail is worth building. */
+private const val DETAIL_ZOOM_THRESHOLD = 1.5f
 
 /** How far the picture can be pinched in, and how far a double tap jumps in one step. */
 private const val MIN_ZOOM = 1f
@@ -128,6 +136,60 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
     var panelOpen by rememberSaveable { mutableStateOf(true) }
     var maskUi by remember { mutableStateOf(MaskUiState()) }
     val shown = if (showOriginal) original else preview
+
+    // The 1:1 detail: the native crop of the visible window, plus its unedited twin for compare.
+    val detail by vm.detail.collectAsState()
+    val detailOriginal by vm.detailOriginal.collectAsState()
+    val detailRect by vm.detailRect.collectAsState()
+    val detailReady by vm.detailReady.collectAsState()
+    val detailVersion by vm.detailVersion.collectAsState()
+    val nativeSize by vm.nativeSize.collectAsState()
+
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    // Zoom and pan of the preview. One finger paints while the mask panel is open, so zooming is
+    // offered everywhere else and cleared on the way in, which keeps mask taps on the right pixel.
+    var scale by remember(photo.id) { mutableFloatStateOf(MIN_ZOOM) }
+    var panOffset by remember(photo.id) { mutableStateOf(Offset.Zero) }
+    // Before/after split: the edited picture with the original revealed left of a draggable handle.
+    var splitMode by remember(photo.id) { mutableStateOf(false) }
+    var splitFraction by remember(photo.id) { mutableFloatStateOf(0.5f) }
+    val maskEditing = panelOpen && tab == MASK_TAB
+    val canZoom = !maskEditing
+    LaunchedEffect(maskEditing) {
+        if (maskEditing) {
+            splitMode = false
+            scale = MIN_ZOOM
+            panOffset = Offset.Zero
+        }
+    }
+
+    // Entering the split jumps to real pixels (1 native px = 1 screen px) so the compare is honest,
+    // then re-centres. It cannot zoom, so the handle drag never fights a pan.
+    val baseForFit = preview ?: original
+    LaunchedEffect(splitMode) {
+        if (splitMode && baseForFit != null && nativeSize != null && boxSize.width > 0) {
+            val frame = fitFrame(boxSize, baseForFit.width, baseForFit.height)
+            val nativeLong = max(nativeSize!!.width, nativeSize!!.height).toFloat()
+            scale = (nativeLong / max(frame.width, frame.height)).coerceIn(MIN_ZOOM, MAX_ZOOM)
+            panOffset = Offset.Zero
+            splitFraction = 0.5f
+        }
+    }
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val next = (scale * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
+        scale = next
+        panOffset = clampOffset(panOffset + panChange, next, boxSize, preview ?: original)
+    }
+
+    // The visible window, in normalised image coordinates, is what the 1:1 detail is rendered from.
+    val wantDetail = canZoom && (splitMode || scale > DETAIL_ZOOM_THRESHOLD)
+    LaunchedEffect(wantDetail, scale, panOffset, boxSize, detailVersion, baseForFit) {
+        if (!wantDetail || baseForFit == null || boxSize.width == 0 || boxSize.height == 0) return@LaunchedEffect
+        val frame = fitFrame(boxSize, baseForFit.width, baseForFit.height)
+        vm.requestDetail(visibleViewport(boxSize, frame, scale, panOffset))
+    }
+
 
     Column(
         Modifier
@@ -158,43 +220,18 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                 Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Refazer")
             }
             IconButton(
-                onClick = {},
-                modifier = Modifier.pointerInput(Unit) {
-                    detectTapGestures(
-                        onPress = {
-                            vm.setShowOriginal(true)
-                            tryAwaitRelease()
-                            vm.setShowOriginal(false)
-                        }
-                    )
-                },
+                onClick = { splitMode = !splitMode },
             ) {
-                Icon(Icons.Filled.Compare, contentDescription = "Segure para ver o original")
+                Icon(
+                    Icons.Filled.Compare,
+                    contentDescription = if (splitMode) "Sair da divisão antes/depois" else "Comparar antes/depois",
+                )
             }
             IconButton(onClick = vm::exportCurrent) {
                 Icon(Icons.Filled.Download, contentDescription = "Exportar")
             }
         }
 
-        var boxSize by remember { mutableStateOf(IntSize.Zero) }
-        // Zoom and pan of the preview. One finger paints while the mask panel is open, so zooming
-        // is offered everywhere else and cleared on the way in, which keeps mask taps on the right
-        // pixel. Folding the mask panel away hands the finger back to zooming.
-        var scale by remember(photo.id) { mutableFloatStateOf(MIN_ZOOM) }
-        var panOffset by remember(photo.id) { mutableStateOf(Offset.Zero) }
-        val maskEditing = panelOpen && tab == MASK_TAB
-        val canZoom = !maskEditing
-        LaunchedEffect(maskEditing) {
-            if (maskEditing) {
-                scale = MIN_ZOOM
-                panOffset = Offset.Zero
-            }
-        }
-        val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-            val next = (scale * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
-            scale = next
-            panOffset = clampOffset(panOffset + panChange, next, boxSize, preview ?: original)
-        }
         val masksLive by rememberUpdatedState(params.masks)
         var overlayBmp by remember { mutableStateOf<Bitmap?>(null) }
         val maskSel = params.masks.firstOrNull { it.id == maskUi.selectedId }
@@ -220,7 +257,8 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
             val m = masksLive.firstOrNull { it.id == id } ?: return
             val src = original ?: return
             // Fingers land on the displayed preview, which may be turned; masks live in image space.
-            val pt = toImageSpace(p, params.rotation, params.flipHorizontal)
+            val (ptx, pty) = toImageSpace(p.x, p.y, params.rotation, params.flipHorizontal)
+            val pt = Offset(ptx, pty)
             val aspect = src.width.toFloat() / src.height
             when (m.type) {
                 MaskType.BRUSH -> {
@@ -265,7 +303,7 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
         Box(
             Modifier.weight(1f).fillMaxWidth().padding(horizontal = 0.dp, vertical = 4.dp)
                 .onSizeChanged { boxSize = it }
-                .then(if (canZoom) Modifier.transformable(transformState) else Modifier)
+                .then(if (canZoom && !splitMode) Modifier.transformable(transformState) else Modifier)
                 .pointerInput(maskEditing, maskUi.selectedId, maskUi.erasing) {
                     if (!maskEditing) return@pointerInput
                     detectTapGestures(onTap = { offset ->
@@ -276,7 +314,8 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                             (m.type == MaskType.SELECT || m.type == MaskType.SUBJECT) && bmp != null
                         ) {
                             toImageCoords(offset, boxSize, bmp.width, bmp.height)?.let { p ->
-                                val img = toImageSpace(p, params.rotation, params.flipHorizontal)
+                                val (ix, iy) = toImageSpace(p.x, p.y, params.rotation, params.flipHorizontal)
+                                val img = Offset(ix, iy)
                                 // Each tap drops a pin: adds to the selection, or carves it away.
                                 val pin = MaskPoint(img.x, img.y, maskUi.erasing)
                                 vm.updateLive { ps ->
@@ -309,9 +348,9 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                         },
                     )
                 }
-                .pointerInput(maskEditing) {
+                .pointerInput(maskEditing || splitMode) {
                     // On the picture: hold to peek at the original, double tap to zoom in and back out.
-                    if (maskEditing) return@pointerInput
+                    if (maskEditing || splitMode) return@pointerInput
                     detectTapGestures(
                         onDoubleTap = { pos ->
                             if (scale > MIN_ZOOM) {
@@ -334,6 +373,20 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                             vm.setShowOriginal(false)
                         },
                     )
+                }
+                .pointerInput(splitMode, boxSize, scale, panOffset, baseForFit) {
+                    if (!splitMode) return@pointerInput
+                    detectDragGestures { change, _ ->
+                        change.consume()
+                        val bmp = baseForFit
+                        if (bmp != null && boxSize.width > 0) {
+                            val frame = fitFrame(boxSize, bmp.width, bmp.height)
+                            val cx = boxSize.width / 2f
+                            // Undo the preview transform to land the handle where the finger is.
+                            val innerX = (change.position.x - cx - panOffset.x) / scale + cx
+                            splitFraction = ((innerX - frame.left) / frame.width).coerceIn(0.02f, 0.98f)
+                        }
+                    }
                 },
             contentAlignment = Alignment.Center,
         ) {
@@ -345,13 +398,51 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                     translationY = panOffset.y
                 }
             ) {
-                shown?.let {
+                val base = shown
+                base?.let {
                     Image(
                         bitmap = it.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),
                     )
+                }
+                val frame = base?.let { fitFrame(boxSize, it.width, it.height) }
+                val rect = detailRect
+                val patch = if (showOriginal) (detailOriginal ?: detail) else detail
+                if (frame != null && rect != null && patch != null) {
+                    // The sharp 1:1 patch, placed by its own rect so it stays aligned at any zoom.
+                    DetailLayer(patch, frame, rect)
+                    if (splitMode) {
+                        detailOriginal?.let { originalPatch ->
+                            Box(
+                                Modifier.fillMaxSize().drawWithContent {
+                                    clipRect(right = frame.left + splitFraction * frame.width) {
+                                        this@drawWithContent.drawContent()
+                                    }
+                                }
+                            ) { DetailLayer(originalPatch, frame, rect) }
+                        }
+                    }
+                } else if (splitMode && base != null && frame != null) {
+                    // No 1:1 yet: reveal the settled original on the left of the handle.
+                    val before = if (showOriginal) null else original
+                    if (before != null) {
+                        Box(
+                            Modifier.fillMaxSize().drawWithContent {
+                                clipRect(right = frame.left + splitFraction * frame.width) {
+                                    this@drawWithContent.drawContent()
+                                }
+                            }
+                        ) {
+                            Image(
+                                bitmap = before.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
                 }
                 overlayBmp?.let {
                     Image(
@@ -362,27 +453,99 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                     )
                 }
             }
-            if (canZoom && scale > MIN_ZOOM * 1.02f) {
-                Text(
-                    "%.1f×".format(scale),
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(8.dp)
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
-                        .clickable {
-                            scale = MIN_ZOOM
-                            panOffset = Offset.Zero
-                        }
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                )
+            val fitBitmap = baseForFit
+            if (canZoom && (scale > MIN_ZOOM * 1.02f || !splitMode)) {
+                Row(
+                    Modifier.align(Alignment.BottomStart).padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "%.1f×".format(scale),
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                            .clickable {
+                                scale = MIN_ZOOM
+                                panOffset = Offset.Zero
+                            }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    if (nativeSize != null && fitBitmap != null && boxSize.width > 0) {
+                        Text(
+                            "1:1",
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val frame = fitFrame(boxSize, fitBitmap.width, fitBitmap.height)
+                                    val nativeLong = max(nativeSize!!.width, nativeSize!!.height).toFloat()
+                                    scale = (nativeLong / max(frame.width, frame.height))
+                                        .coerceIn(MIN_ZOOM, MAX_ZOOM)
+                                    panOffset = Offset.Zero
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
             }
             if (showOriginal) {
                 Text(
                     "ORIGINAL",
                     modifier = Modifier
                         .align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            if (wantDetail) {
+                // Tells the user the patch on screen is the real pixel, not an upscaled preview.
+                Text(
+                    if (detailReady) "detalhe 1:1" else "nítido…",
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            if (splitMode) {
+                val handleX = if (fitBitmap == null || boxSize.width == 0) {
+                    boxSize.width / 2f
+                } else {
+                    val frame = fitFrame(boxSize, fitBitmap.width, fitBitmap.height)
+                    val cx = boxSize.width / 2f
+                    (frame.left + splitFraction * frame.width - cx) * scale + cx + panOffset.x
+                }
+                Canvas(Modifier.fillMaxSize()) {
+                    drawLine(
+                        color = Color.White,
+                        start = Offset(handleX, 0f),
+                        end = Offset(handleX, size.height),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                    drawCircle(Color.White, 7.dp.toPx(), Offset(handleX, size.height / 2f))
+                }
+                Text(
+                    "ANTES",
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(8.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text(
+                    "DEPOIS",
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
                         .padding(8.dp)
                         .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -466,12 +629,16 @@ fun EditorScreen(vm: LumenViewModel, photo: Photo) {
                         LutSection(vm, params)
                         Adjust(vm, "Vinheta", params.vignette, -1f..1f, ::percent) { p, v -> p.copy(vignette = v) }
                     }
-                    4 -> {
-                        Adjust(vm, "Distorção", params.distortion, -1f..1f, ::percent) { p, v -> p.copy(distortion = v) }
-                        Adjust(vm, "Aberração Vermelho/Ciano", params.chromaRed, -1f..1f, ::percent) { p, v -> p.copy(chromaRed = v) }
-                        Adjust(vm, "Aberração Azul/Amarelo", params.chromaBlue, -1f..1f, ::percent) { p, v -> p.copy(chromaBlue = v) }
-                    }
+                    DETAIL_TAB -> DetailTab(vm, params)
                     5 -> {
+                        Adjust(vm, "Distorção", params.distortion, -1f..1f, ::percent) { p, v -> p.copy(distortion = v) }
+                        // Both fringe sliders are bidirectional: "−" corrects, "+" adds the fringe.
+                        Adjust(vm, "Franja R/C (− reduz · + adiciona)", params.chromaRed, -1f..1f, ::percent) { p, v -> p.copy(chromaRed = v) }
+                        Adjust(vm, "Franja A/A (− reduz · + adiciona)", params.chromaBlue, -1f..1f, ::percent) { p, v -> p.copy(chromaBlue = v) }
+                        Adjust(vm, "Deslocar R/C", params.chromaShiftRed, -0.02f..0.02f, ::shiftPercent) { p, v -> p.copy(chromaShiftRed = v) }
+                        Adjust(vm, "Deslocar A/A", params.chromaShiftBlue, -0.02f..0.02f, ::shiftPercent) { p, v -> p.copy(chromaShiftBlue = v) }
+                    }
+                    6 -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = {
                                 vm.updateLive { it.copy(rotation = (it.rotation + 3) % 4) }
@@ -604,6 +771,7 @@ private fun ColorTab(vm: LumenViewModel, params: EditParams) {
                     vm.updateLive { it.copy(grading = ColorGrading()) }
                     vm.commit()
                 },
+                onCommit = vm::commit,
             )
             else -> ColorMixerPanel(
                 mixer = params.mixer,
@@ -616,6 +784,7 @@ private fun ColorTab(vm: LumenViewModel, params: EditParams) {
                     vm.updateLive { it.copy(mixer = ColorMixer()) }
                     vm.commit()
                 },
+                onCommit = vm::commit,
             )
         }
         TextButton(
@@ -718,6 +887,27 @@ private fun Adjust(
 
 private fun percent(v: Float): String = "%+d".format((v * 100f).roundToInt())
 
+private fun zeroPercent(v: Float): String = "%d%%".format((v * 100f).roundToInt())
+
+/** The uniform chroma shift reads best as a small percentage of the width. */
+private fun shiftPercent(v: Float): String = "%+.2f%%".format(v * 100f)
+
+/** Sharpening, its radius and the two noise-reduction controls, with a nudge to look at 1:1. */
+@Composable
+private fun DetailTab(vm: LumenViewModel, params: EditParams) {
+    Adjust(vm, "Nitidez", params.sharpness, -1f..1f, ::percent) { p, v -> p.copy(sharpness = v) }
+    Adjust(vm, "Raio", params.sharpenRadius, 0f..1f, { "%.1f".format(it) }) { p, v -> p.copy(sharpenRadius = v) }
+    Adjust(vm, "Redução de ruído — Luminância", params.noiseLuminance, 0f..1f, ::zeroPercent) { p, v -> p.copy(noiseLuminance = v) }
+    Adjust(vm, "Redução de ruído — Cor", params.noiseColor, 0f..1f, ::zeroPercent) { p, v -> p.copy(noiseColor = v) }
+    Adjust(vm, "Preservar detalhe", params.noiseDetail, 0f..1f, ::zeroPercent, default = 0.5f) { p, v -> p.copy(noiseDetail = v) }
+    Text(
+        "Amplie até 1:1 para julgar nitidez e ruído.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+}
+
 /** Maps a touch inside a ContentScale.Fit box to normalised image coordinates, or null outside. */
 private fun toImageCoords(offset: Offset, box: IntSize, imgW: Int, imgH: Int): Offset? {
     if (box.width <= 0 || box.height <= 0 || imgW <= 0 || imgH <= 0) return null
@@ -738,40 +928,6 @@ private fun toImageCoords(offset: Offset, box: IntSize, imgW: Int, imgH: Int): O
     return Offset(nx, ny)
 }
 
-
-/**
- * Turns a point from the displayed (turned and mirrored) preview back into the normalised image
- * space where masks are stored, so a mask stays on the part of the photo it was drawn over.
- */
-private fun toImageSpace(p: Offset, rotation: Int, flip: Boolean): Offset {
-    val quarter = ((rotation % 4) + 4) % 4
-    var x = p.x
-    var y = p.y
-    when (quarter) {
-        1 -> { x = p.y; y = 1f - p.x }
-        2 -> { x = 1f - p.x; y = 1f - p.y }
-        3 -> { x = 1f - p.y; y = p.x }
-    }
-    if (flip) x = 1f - x
-    return Offset(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
-}
-
-/** Gives a bitmap built in image space the same turn and mirror the preview is shown with. */
-private fun oriented(src: Bitmap, rotation: Int, flip: Boolean): Bitmap {
-    val quarter = ((rotation % 4) + 4) % 4
-    if (quarter == 0 && !flip) return src
-    val w = src.width
-    val h = src.height
-    val outW = if (quarter % 2 == 1) h else w
-    val outH = if (quarter % 2 == 1) w else h
-    val m = Matrix()
-    if (flip) m.postScale(-1f, 1f, w / 2f, h / 2f)
-    m.postRotate(90f * quarter, w / 2f, h / 2f)
-    m.postTranslate((outW - w) / 2f, (outH - h) / 2f)
-    val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
-    Canvas(out).drawBitmap(src, m, null)
-    return out
-}
 
 /**
  * Stops a zoomed preview from being dragged off the frame. The picture is drawn to fit the box, so
@@ -795,5 +951,59 @@ private fun clampOffset(pan: Offset, scale: Float, box: IntSize, bmp: Bitmap?): 
     return Offset(
         pan.x.coerceIn(-maxX.coerceAtLeast(0f), maxX.coerceAtLeast(0f)),
         pan.y.coerceIn(-maxY.coerceAtLeast(0f), maxY.coerceAtLeast(0f)),
+    )
+}
+
+/** Where ContentScale.Fit draws the picture inside the box, in box pixels. */
+private data class FitFrame(val left: Float, val top: Float, val width: Float, val height: Float)
+
+private fun fitFrame(box: IntSize, imgW: Int, imgH: Int): FitFrame {
+    if (imgW <= 0 || imgH <= 0 || box.width <= 0 || box.height <= 0) {
+        return FitFrame(0f, 0f, box.width.toFloat(), box.height.toFloat())
+    }
+    val imageAspect = imgW.toFloat() / imgH
+    val boxAspect = box.width.toFloat() / box.height
+    return if (boxAspect > imageAspect) {
+        val h = box.height.toFloat()
+        val w = h * imageAspect
+        FitFrame((box.width - w) / 2f, 0f, w, h)
+    } else {
+        val w = box.width.toFloat()
+        val h = w / imageAspect
+        FitFrame(0f, (box.height - h) / 2f, w, h)
+    }
+}
+
+/** The window of the image currently visible, in normalised coordinates of the displayed image. */
+private fun visibleViewport(box: IntSize, frame: FitFrame, scale: Float, pan: Offset): DetailRect {
+    val cx = box.width / 2f
+    val cy = box.height / 2f
+    val left = (0f - cx - pan.x) / scale + cx
+    val top = (0f - cy - pan.y) / scale + cy
+    val right = (box.width - cx - pan.x) / scale + cx
+    val bottom = (box.height - cy - pan.y) / scale + cy
+    return DetailRect(
+        ((left - frame.left) / frame.width).coerceIn(0f, 1f),
+        ((top - frame.top) / frame.height).coerceIn(0f, 1f),
+        ((right - frame.left) / frame.width).coerceIn(0f, 1f),
+        ((bottom - frame.top) / frame.height).coerceIn(0f, 1f),
+    )
+}
+
+/** Draws one 1:1 crop over the preview, stretched into the place its rect occupies. */
+@Composable
+private fun DetailLayer(bitmap: Bitmap, frame: FitFrame, rect: DetailRect) {
+    val density = LocalDensity.current
+    val ox = frame.left + rect.u0 * frame.width
+    val oy = frame.top + rect.v0 * frame.height
+    val dw = (rect.u1 - rect.u0) * frame.width
+    val dh = (rect.v1 - rect.v0) * frame.height
+    Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = null,
+        contentScale = ContentScale.FillBounds,
+        modifier = Modifier
+            .offset { IntOffset(ox.roundToInt(), oy.roundToInt()) }
+            .size(with(density) { dw.toDp() }, with(density) { dh.toDp() }),
     )
 }
